@@ -33,7 +33,7 @@ step "6/8 registro MCP no Claude Code"
 if claude mcp get memory >/dev/null 2>&1; then
   echo "  server 'memory' já registrado, mantido."
 else
-  claude mcp add memory \
+  claude mcp add memory -s user \
     -- node \
     --env-file="${PROJECT_DIR}/.env" \
     --experimental-strip-types \

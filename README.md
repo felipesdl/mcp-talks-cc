@@ -95,10 +95,10 @@ Resources:
 
 ## Registro no Claude Code
 
-Para usar o MCP dentro do Claude Code, registre o server. Forma mais segura via CLI:
+Para usar o MCP dentro do Claude Code, registre o server. Forma mais segura via CLI. O `-s user` registra em escopo de usuário (global, vale em todos os projetos); sem ele o default é escopo `local`, que só anexa o server no diretório de onde o comando rodou:
 
 ```bash
-claude mcp add memory \
+claude mcp add memory -s user \
   -- node \
   --env-file=/ABSOLUTE/PATH/TO/mcp-talks-cc/.env \
   --experimental-strip-types \
