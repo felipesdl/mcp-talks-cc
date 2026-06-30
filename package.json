@@ -1,0 +1,34 @@
+{
+  "name": "mcp-talks-cc",
+  "version": "0.1.0",
+  "description": "MCP server local que indexa conversas Claude Code (conversas + plans + todos + task memory) em Neo4j com busca vetorial",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down",
+    "infra:reset": "docker compose down --volumes && rm -rf neo4j/data neo4j/logs",
+    "db:init": "node --env-file=.env --experimental-strip-types src/cli/initSchema.ts",
+    "db:stats": "node --env-file=.env --experimental-strip-types src/cli/stats.ts",
+    "rebuild:similar": "node --env-file=.env --experimental-strip-types src/cli/rebuildSimilar.ts",
+    "ingest": "node --env-file=.env --experimental-strip-types src/ingest/index.ts",
+    "self-tune": "node --env-file=.env --experimental-strip-types src/cli/selfTune.ts",
+    "self-tune:accept": "node --env-file=.env --experimental-strip-types src/cli/selfTuneAccept.ts",
+    "search": "node --env-file=.env --experimental-strip-types src/cli/search.ts",
+    "mcp:start": "node --env-file=.env --experimental-strip-types src/mcp/server.ts",
+    "mcp:inspect": "npx @modelcontextprotocol/inspector node --env-file=.env --experimental-strip-types src/mcp/server.ts",
+    "test": "node --env-file=.env --experimental-strip-types --test tests/chunker.test.ts tests/redact.test.ts tests/tools/searchMemory.test.ts tests/tools/getSessionTranscript.test.ts tests/tools/findSimilarChunks.test.ts tests/mmr.test.ts tests/learning/grade.test.ts tests/learning/primer.test.ts tests/mcp/tuning.test.ts",
+    "test:unit": "node --experimental-strip-types --test tests/chunker.test.ts tests/redact.test.ts tests/learning/grade.test.ts tests/learning/primer.test.ts tests/mcp/tuning.test.ts"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "neo4j-driver": "^5.28.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0"
+  }
+}

@@ -1,0 +1,45 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { getEmbedder } from '../embeddings/localEmbedder.ts';
+import { closeDriver } from '../neo4j/driver.ts';
+import { registerSearchMemoryTool } from './tools/searchMemory.ts';
+import { registerGetSessionTranscriptTool } from './tools/getSessionTranscript.ts';
+import { registerFindRelatedPlansTool } from './tools/findRelatedPlans.ts';
+import { registerFindDecisionsTool } from './tools/findDecisions.ts';
+import { registerListProjectActivityTool } from './tools/listProjectActivity.ts';
+import { registerFindSimilarChunksTool } from './tools/findSimilarChunks.ts';
+import { registerRecallContextPrompt } from './prompts/recallContext.ts';
+import { registerExtractDecisionPrompt } from './prompts/extractDecision.ts';
+import { registerStatsResource } from './resources/stats.ts';
+import { registerSchemaResource } from './resources/schema.ts';
+import { registerProfileResource } from './resources/profile.ts';
+
+const server = new McpServer({
+  name: 'mcp-talks-cc',
+  version: '0.2.0',
+});
+
+registerSearchMemoryTool(server);
+registerGetSessionTranscriptTool(server);
+registerFindRelatedPlansTool(server);
+registerFindDecisionsTool(server);
+registerListProjectActivityTool(server);
+registerFindSimilarChunksTool(server);
+
+registerRecallContextPrompt(server);
+registerExtractDecisionPrompt(server);
+
+registerStatsResource(server);
+registerSchemaResource(server);
+registerProfileResource(server);
+
+await getEmbedder();
+await server.connect(new StdioServerTransport());
+console.error('[mcp] mcp-talks-cc server connected (stdio)');
+
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, async () => {
+    await closeDriver();
+    process.exit(0);
+  });
+}

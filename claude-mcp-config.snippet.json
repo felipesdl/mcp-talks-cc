@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "node",
+      "args": [
+        "--env-file=/ABSOLUTE/PATH/TO/mcp-talks-cc/.env",
+        "--experimental-strip-types",
+        "/ABSOLUTE/PATH/TO/mcp-talks-cc/src/mcp/server.ts"
+      ]
+    }
+  }
+}
