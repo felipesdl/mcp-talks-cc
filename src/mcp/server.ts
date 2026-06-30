@@ -33,9 +33,13 @@ registerStatsResource(server);
 registerSchemaResource(server);
 registerProfileResource(server);
 
-await getEmbedder();
 await server.connect(new StdioServerTransport());
 console.error('[mcp] mcp-talks-cc server connected (stdio)');
+
+// Preload the embedder in the background so the first search isn't cold.
+// Must NOT block server.connect above: the bge-m3 cold load is ~30-60s and
+// would stall the MCP initialize handshake, making the client time out.
+void getEmbedder().catch((e) => console.error('[mcp] embedder preload failed:', e));
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, async () => {
