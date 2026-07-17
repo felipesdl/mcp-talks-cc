@@ -30,15 +30,15 @@ step "5/8 ingest inicial (--source=all, incremental nas próximas vezes)"
 npm run ingest -- --source=all
 
 step "6/8 registro MCP no Claude Code"
-if claude mcp get memory >/dev/null 2>&1; then
-  echo "  server 'memory' já registrado, mantido."
+if claude mcp get mcp-talks-cc >/dev/null 2>&1; then
+  echo "  server 'mcp-talks-cc' já registrado, mantido."
 else
-  claude mcp add memory -s user \
+  claude mcp add mcp-talks-cc -s user \
     -- node \
     --env-file="${PROJECT_DIR}/.env" \
     --experimental-strip-types \
     "${PROJECT_DIR}/src/mcp/server.ts"
-  echo "  server 'memory' registrado."
+  echo "  server 'mcp-talks-cc' registrado."
 fi
 
 step "7/8 hook SessionStart (auto-ingest)"
@@ -53,5 +53,5 @@ echo "================================================================"
 echo "Setup completo."
 echo "  Auto-ingest: dispara a cada SessionStart, log em ~/.cache/mcp-talks-cc/ingest.log"
 echo "  Verificar grafo:  npm run db:stats"
-echo "  Verificar MCP:    /mcp no Claude Code (server 'memory' conectado)"
+echo "  Verificar MCP:    /mcp no Claude Code (server 'mcp-talks-cc' conectado)"
 echo "================================================================"

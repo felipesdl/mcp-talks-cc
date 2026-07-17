@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "memory": {
+    "mcp-talks-cc": {
       "command": "node",
       "args": [
         "--env-file=/ABSOLUTE/PATH/TO/mcp-talks-cc/.env",
