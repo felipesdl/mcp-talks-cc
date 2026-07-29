@@ -42,17 +42,32 @@ export async function computeEcho(
   // 1) resolve a sessão chamadora
   let sessionId = entry.sessionId;
   let joinMethod: 'session' | 'timeWindow' = 'session';
+  let ambiguous = false;
   if (!sessionId) {
     joinMethod = 'timeWindow';
+    // Filtra pelo cwd do CALLER (callerProject), nunca pelo arg `project` da
+    // busca: aquele é o repo alvo do boost e costuma ser outro repo, o que faz
+    // o join voltar sem candidata nenhuma e mata o sinal.
+    // Com 2+ candidatas não desiste: escolhe a que mais falou na janela e marca
+    // ambiguous (grade.ts já penaliza a confidence).
+    const tsPlusWindow = new Date(
+      new Date(entry.ts).getTime() + ECHO_WINDOW_MS,
+    ).toISOString();
     const r = await s.run(
       `MATCH (sess:Session)
        WHERE ($project IS NULL OR sess.projectPath = $project)
          AND sess.startedAt IS NOT NULL AND sess.startedAt <= $ts
          AND (sess.endedAt IS NULL OR sess.endedAt >= $ts)
-       RETURN sess.id AS id LIMIT 3`,
-      { project: entry.project, ts: entry.ts },
+       OPTIONAL MATCH (sess)-[:HAS_MESSAGE]->(m:Message)
+       WHERE m.role = 'assistant' AND m.timestamp > $ts AND m.timestamp <= $tsPlus
+       WITH sess, count(m) AS followups
+       RETURN sess.id AS id, followups
+       ORDER BY followups DESC, sess.startedAt DESC
+       LIMIT 5`,
+      { project: entry.callerProject ?? null, ts: entry.ts, tsPlus: tsPlusWindow },
     );
-    if (r.records.length !== 1) return none('timeWindow', true);
+    if (r.records.length === 0) return none('timeWindow', true);
+    ambiguous = r.records.length > 1;
     sessionId = r.records[0]!.get('id') as string;
   }
 
@@ -67,7 +82,7 @@ export async function computeEcho(
   const texts = msgRes.records
     .map((rec) => (rec.get('text') as string) ?? '')
     .filter((t) => t.trim().length > 0);
-  if (texts.length === 0) return none(joinMethod, false);
+  if (texts.length === 0) return none(joinMethod, ambiguous);
 
   // 3) embeddings dos chunks retornados (não guardamos no log; re-busca por id)
   const hitIds = entry.hits.map((h) => h.id);
@@ -79,7 +94,7 @@ export async function computeEcho(
     id: rec.get('id') as string,
     vec: rec.get('embedding') as number[],
   }));
-  if (chunkVecs.length === 0) return none(joinMethod, false);
+  if (chunkVecs.length === 0) return none(joinMethod, ambiguous);
 
   const msgVecs = await embed(texts.map((t) => t.slice(0, 4000)));
 
@@ -96,7 +111,7 @@ export async function computeEcho(
     echoRaw: max,
     perHit,
     joinMethod,
-    ambiguous: false,
+    ambiguous,
     assistantTextChars: texts.reduce((acc, t) => acc + t.length, 0),
   };
 }

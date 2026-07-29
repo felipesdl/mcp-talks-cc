@@ -56,6 +56,32 @@ describe('combineSignals', () => {
     assert.equal(r.confidence, 0.05);
   });
 
+  // O join por time-window com 2+ sessões candidatas escolhe a mais provável e
+  // marca ambiguous, em vez de descartar o sinal: sinal com confidence menor
+  // vale mais que sinal nenhum.
+  it('ambiguous derruba confidence mas mantém o sinal utilizável', () => {
+    const signals = {
+      echoRaw: 0.7,
+      echoCalibrated: 0.8,
+      reformulated: null,
+      drillIn: null,
+      zeroHit: false,
+    };
+    const claro = combineSignals(combineInput({ signals, joinMethod: 'timeWindow' }));
+    const ambiguo = combineSignals(
+      combineInput({ signals, joinMethod: 'timeWindow', ambiguous: true }),
+    );
+    assert.equal(claro.utility, ambiguo.utility, 'utility não depende do join');
+    assert.ok(
+      ambiguo.confidence < claro.confidence,
+      `ambiguous deveria penalizar: ${ambiguo.confidence} vs ${claro.confidence}`,
+    );
+    assert.ok(
+      ambiguo.confidence > 0.05,
+      'ainda tem que valer mais que o caso "nenhum sinal" (0.05)',
+    );
+  });
+
   it('echo não calibrado tem peso 0 (só echoRaw presente -> sem sinal)', () => {
     const r = combineSignals(
       combineInput({ signals: { echoRaw: 0.85, echoCalibrated: null, reformulated: null, drillIn: null, zeroHit: false } }),

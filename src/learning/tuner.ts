@@ -1,4 +1,5 @@
-import { MIN_ECHO_SAMPLES, TUNING_BOUNDS, type EchoCalibration, type Grade, type Profile, type QueryLogEntry, type Tuning } from './types.ts';
+import { confidenceFromVec } from '../mcp/scoreCalibration.ts';
+import { MIN_ECHO_SAMPLES, MIN_SCORE_SAMPLES, TUNING_BOUNDS, type EchoCalibration, type Grade, type Profile, type QueryLogEntry, type ScoreCalibration, type Tuning } from './types.ts';
 
 export const MIN_SAMPLES = 30;
 const MIN_HITS_PER_BUCKET = 20;
@@ -22,6 +23,7 @@ export function buildTuningProposal(
   profile: Profile,
   current: Tuning,
   calibration: EchoCalibration | null,
+  scoreCalibration: ScoreCalibration | null = null,
 ): TuningProposal {
   const searches = graded.filter((g) => g.entry.tool === 'search_memory');
   const n = searches.length;
@@ -41,6 +43,44 @@ export function buildTuningProposal(
       `percentis: ${Object.entries(calibration.percentiles).map(([k, v]) => `${k}=${v.toFixed(3)}`).join(' ')}`,
       '',
     );
+  }
+
+  // Distribuição observada de confidence: é daqui que saem os cortes do
+  // CLAUDE.md ("cita se conf >= X"), em vez de número chutado.
+  if (scoreCalibration) {
+    lines.push('## score / confidence');
+    if (scoreCalibration.ready) {
+      const confs = searches
+        .flatMap((g) => g.entry.hits.map((h) => confidenceFromVec(h.vecScore, scoreCalibration)))
+        .filter((v): v is number => v !== null)
+        .sort((a, b) => a - b);
+      const q = (p: number): string =>
+        confs.length > 0
+          ? confs[Math.min(confs.length - 1, Math.round((p / 100) * (confs.length - 1)))]!.toFixed(2)
+          : '-';
+      const topConfs = searches
+        .map((g) => {
+          const vs = g.entry.hits.map((h) => confidenceFromVec(h.vecScore, scoreCalibration) ?? 0);
+          return vs.length > 0 ? Math.max(...vs) : 0;
+        })
+        .sort((a, b) => a - b);
+      const qt = (p: number): string =>
+        topConfs.length > 0
+          ? topConfs[Math.min(topConfs.length - 1, Math.round((p / 100) * (topConfs.length - 1)))]!.toFixed(2)
+          : '-';
+      lines.push(
+        `calibrado com ${scoreCalibration.nSamples} vec_scores | percentis vec: ${Object.entries(scoreCalibration.percentiles).map(([k, v]) => `${k}=${v.toFixed(3)}`).join(' ')}`,
+        `confidence de todos os hits: p25=${q(25)} p50=${q(50)} p75=${q(75)} p90=${q(90)}`,
+        `confidence do MELHOR hit por query: p25=${qt(25)} p50=${qt(50)} p75=${qt(75)} p90=${qt(90)}`,
+        `sugestão de gate pro CLAUDE.md: forte >= ${qt(75)}, fraco entre ${qt(25)} e ${qt(75)}, ignorar < ${qt(25)}`,
+        '',
+      );
+    } else {
+      lines.push(
+        `coletando: ${scoreCalibration.nSamples}/${MIN_SCORE_SAMPLES} vec_scores — search_memory devolve confidence=null até calibrar`,
+        '',
+      );
+    }
   }
 
   if (n < MIN_SAMPLES) {

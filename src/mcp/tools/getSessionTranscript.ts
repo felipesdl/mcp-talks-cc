@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
 import { toToolError } from '../../domain/errors.ts';
+import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
 
 const inputSchema = {
@@ -89,7 +90,8 @@ export function registerGetSessionTranscriptTool(server: McpServer): void {
           v: 1,
           ts: new Date().toISOString(),
           tool: 'get_session_transcript',
-          sessionId: null,
+          sessionId: resolveCallerSession().sessionId,
+          callerProject: resolveCallerSession().project,
           query: null,
           k: null,
           scope: null,

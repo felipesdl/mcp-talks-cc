@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
 import { toToolError } from '../../domain/errors.ts';
+import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
 
 const inputSchema = {
@@ -95,7 +96,8 @@ export function registerFindSimilarChunksTool(server: McpServer): void {
           v: 1,
           ts: new Date().toISOString(),
           tool: 'find_similar_chunks',
-          sessionId: null,
+          sessionId: resolveCallerSession().sessionId,
+          callerProject: resolveCallerSession().project,
           query: null,
           k: args.k ?? null,
           scope: args.scope ?? null,
