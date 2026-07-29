@@ -7,7 +7,7 @@ import { config } from '../../config.ts';
 import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
 import { embedBatched } from '../../embeddings/localEmbedder.ts';
-import { isUnchanged, markIngested } from '../checkpoint.ts';
+import { isUnchanged, markIngested, save as saveCheckpoint } from '../checkpoint.ts';
 import {
   writeProjects,
   writeSessions,
@@ -128,7 +128,7 @@ interface ParsedSession {
   embedInputs: EmbedInput[];
 }
 
-async function parseSessionFile(
+export async function parseSessionFile(
   filePath: string,
   includeToolOutputs: boolean,
 ): Promise<ParsedSession | null> {
@@ -270,6 +270,11 @@ function buildChunks(
   return { chunks, texts };
 }
 
+// Backlog acumulado (centenas de arquivos) leva horas de embedding local.
+// Sem flush periódico, morrer no meio joga fora o progresso todo, porque o
+// checkpoint só é salvo no fim do run em src/ingest/index.ts.
+const CHECKPOINT_FLUSH_EVERY = 10;
+
 export interface IngestConversationsOpts {
   limit?: number;
   force?: boolean;
@@ -315,6 +320,14 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
   let totalMessages = 0;
   let totalChunks = 0;
   let skipped = 0;
+  let sinceFlush = 0;
+
+  const flush = async (): Promise<void> => {
+    sinceFlush++;
+    if (sinceFlush < CHECKPOINT_FLUSH_EVERY) return;
+    sinceFlush = 0;
+    await saveCheckpoint();
+  };
 
   for (let i = 0; i < target.length; i++) {
     const fp = target[i]!;
@@ -326,6 +339,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     const parsed = await parseSessionFile(fp, opts.includeToolOutputs ?? false);
     if (!parsed) {
       await markIngested(fp);
+      await flush();
       continue;
     }
 
@@ -342,6 +356,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     }
 
     await markIngested(fp);
+    await flush();
 
     totalSessions++;
     totalMessages += parsed.messages.length;

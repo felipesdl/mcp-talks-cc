@@ -19,6 +19,22 @@ const limit = values.limit ? parseInt(values.limit, 10) : undefined;
 const force = !!values.force;
 const includeToolOutputs = !!values['include-tool-outputs'];
 
+// Backlog longo é matável (kill do hook, reboot, Ctrl-C). Salvar o checkpoint
+// antes de sair mantém o run retomável em vez de recomeçar do zero.
+let shuttingDown = false;
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    if (shuttingDown) process.exit(130);
+    shuttingDown = true;
+    console.error(`[ingest] ${sig} recebido, salvando checkpoint...`);
+    void (async () => {
+      await saveCheckpoint().catch((e) => console.error('[ingest] checkpoint falhou:', e));
+      await closeDriver().catch(() => {});
+      process.exit(130);
+    })();
+  });
+}
+
 async function run(): Promise<void> {
   console.error(
     `[ingest] source=${source} limit=${limit ?? '-'} force=${force} includeToolOutputs=${includeToolOutputs}`,

@@ -64,7 +64,11 @@ export async function writeMessages(rows: MessageRecord[]): Promise<void> {
          SET m.sessionId = r.sessionId,
              m.role = r.role,
              m.timestamp = r.timestamp,
-             m.parentUuid = r.parentUuid
+             m.parentUuid = r.parentUuid,
+             // m.text é obrigatório: sem ele get_session_transcript devolve
+             // transcript vazio e o sinal de echo do self-tune fica impossível
+             // de calcular (não há resposta do assistant pra comparar).
+             m.text = r.text
          WITH m, r
          MATCH (sess:Session { id: r.sessionId })
          MERGE (sess)-[:HAS_MESSAGE]->(m)`,
