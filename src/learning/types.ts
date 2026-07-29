@@ -15,7 +15,8 @@ export interface QueryLogEntry {
   v: 1;
   ts: string;
   tool: 'search_memory' | 'get_session_transcript' | 'find_similar_chunks';
-  sessionId: string | null; // sessão chamadora — quase sempre null (MCP stdio não recebe)
+  sessionId: string | null; // sessão chamadora (resolvida via src/mcp/callerSession.ts)
+  callerProject?: string | null; // cwd da sessão chamadora — NÃO confundir com o arg `project`
   query: string | null;
   k: number | null;
   scope: string[] | null;
@@ -37,6 +38,8 @@ export const queryLogEntrySchema = z.object({
   ts: z.string(),
   tool: z.enum(['search_memory', 'get_session_transcript', 'find_similar_chunks']),
   sessionId: z.string().nullable(),
+  // optional: linhas gravadas antes deste campo existir precisam seguir válidas
+  callerProject: z.string().nullable().optional(),
   query: z.string().nullable(),
   k: z.number().nullable(),
   scope: z.array(z.string()).nullable(),
@@ -112,6 +115,20 @@ export interface EchoCalibration {
   floor: number; // p40 da distribuição real de echoRaw
   ceil: number; // p90
   percentiles: Record<string, number>; // p10..p95 p/ rationale
+}
+
+// ── score-calibration.json ───────────────────────────────────────────────────
+// CDF empírica de vec_score, usada pra derivar `confidence` em search_memory.
+// Ver src/mcp/scoreCalibration.ts.
+
+export const MIN_SCORE_SAMPLES = 200;
+
+export interface ScoreCalibration {
+  v: 1;
+  updatedAt: string;
+  nSamples: number;
+  ready: boolean; // nSamples >= MIN_SCORE_SAMPLES
+  percentiles: Record<string, number>; // p10..p95 de vec_score
 }
 
 // ── profile.json ─────────────────────────────────────────────────────────────
