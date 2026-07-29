@@ -14,13 +14,14 @@
     "db:stats": "node --env-file=.env --experimental-strip-types src/cli/stats.ts",
     "rebuild:similar": "node --env-file=.env --experimental-strip-types src/cli/rebuildSimilar.ts",
     "ingest": "node --env-file=.env --experimental-strip-types src/ingest/index.ts",
+    "backfill:message-text": "node --env-file=.env --experimental-strip-types src/cli/backfillMessageText.ts",
     "self-tune": "node --env-file=.env --experimental-strip-types src/cli/selfTune.ts",
     "self-tune:accept": "node --env-file=.env --experimental-strip-types src/cli/selfTuneAccept.ts",
     "search": "node --env-file=.env --experimental-strip-types src/cli/search.ts",
     "mcp:start": "node --env-file=.env --experimental-strip-types src/mcp/server.ts",
     "mcp:inspect": "npx @modelcontextprotocol/inspector node --env-file=.env --experimental-strip-types src/mcp/server.ts",
-    "test": "node --env-file=.env --experimental-strip-types --test tests/chunker.test.ts tests/redact.test.ts tests/tools/searchMemory.test.ts tests/tools/getSessionTranscript.test.ts tests/tools/findSimilarChunks.test.ts tests/mmr.test.ts tests/learning/grade.test.ts tests/learning/primer.test.ts tests/mcp/tuning.test.ts",
-    "test:unit": "node --experimental-strip-types --test tests/chunker.test.ts tests/redact.test.ts tests/learning/grade.test.ts tests/learning/primer.test.ts tests/mcp/tuning.test.ts"
+    "test": "node --env-file=.env --experimental-strip-types --test tests/chunker.test.ts tests/redact.test.ts tests/tools/searchMemory.test.ts tests/tools/getSessionTranscript.test.ts tests/tools/findSimilarChunks.test.ts tests/mmr.test.ts tests/learning/grade.test.ts tests/learning/primer.test.ts tests/mcp/tuning.test.ts tests/mcp/scoreCalibration.test.ts tests/mcp/callerSession.test.ts tests/search/literalTokens.test.ts tests/search/recency.test.ts",
+    "test:unit": "node --experimental-strip-types --test tests/chunker.test.ts tests/redact.test.ts tests/learning/grade.test.ts tests/learning/primer.test.ts tests/mcp/tuning.test.ts tests/mcp/scoreCalibration.test.ts tests/mcp/callerSession.test.ts tests/search/literalTokens.test.ts tests/search/recency.test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

@@ -51,9 +51,14 @@ Ingestão é **incremental** — `~/.cache/mcp-talks-cc/checkpoint.json` guarda 
 O ingest roda sozinho a cada abertura de sessão do Claude Code. Um hook `SessionStart` em `~/.claude/settings.json` dispara `scripts/session-ingest.sh` em background (`async: true`, não atrasa o boot da sessão).
 
 O wrapper:
-- checa a porta Bolt (`nc -z localhost 7687`) antes — se o Neo4j estiver down, loga "skip" e sai sem pendurar (o driver não tem connect-timeout);
+- checa a porta Bolt (`nc -z localhost 7687`) e, se estiver fechada, **sobe o container** (`docker compose up -d --wait`) antes de desistir (o driver não tem connect-timeout, daí o check de porta);
+- toma lock via `mkdir` de um lockdir com pidfile (não `flock`, que não existe no macOS), liberando por liveness do pid: run de horas não é roubado, e processo morto não bloqueia pra sempre;
 - roda `npm run ingest -- --source=all` (incremental);
+- roda `npm run rebuild:similar` no máx 1x/20h, só se apareceu chunk novo;
+- escreve `~/.cache/mcp-talks-cc/health.json` em todo caminho de saída (`ok` / `neo4j-down` / `lock-held` / `failed`), que é o que o `session-primer.sh` lê pra injetar `[ALERTA mcp-talks-cc]` quando a memória está atrasada;
 - append com timestamp em `~/.cache/mcp-talks-cc/ingest.log`.
+
+**Fail-open é regra aqui.** Guard de lock que falha fechado mata o ingest em silêncio: `flock` não existe no macOS, então `command not found` era lido como "já tem ingest rodando" e o hook saía toda vez, por semanas, sem erro visível. Guard quebrado nunca pode significar skip, e é pra isso que existe o `health.json` mais o alerta no primer.
 
 ```bash
 tail -f ~/.cache/mcp-talks-cc/ingest.log   # acompanhar
@@ -73,7 +78,11 @@ npm run search -- --query="..." --k=5    # CLI de teste de busca vetorial
 npm run db:stats                          # counts por label
 npm run mcp:start                         # roda o MCP server (stdio)
 npm run mcp:inspect                       # MCP Inspector UI
+npm run self-tune -- --regrade-from=all   # re-grada o query-log inteiro (usar quando o grader muda)
+npm run backfill:message-text             # repara Message.text sem re-embedar
 ```
+
+`backfill:message-text` repara `Message.text` quando ele fica vazio no grafo (foi o caso enquanto `writeMessages()` não gravava o campo: `get_session_transcript` devolvia transcript vazio e o echo do self-tune era impossível de calcular). Re-parseia os JSONL em disco e só faz `SET m.text`, sem tocar em Chunk nem no checkpoint. Sessão cujo JSONL o Claude Code já podou não tem como voltar.
 
 ## Tools MCP expostas
 
@@ -105,7 +114,7 @@ claude mcp add memory -s user \
   /ABSOLUTE/PATH/TO/mcp-talks-cc/src/mcp/server.ts
 ```
 
-Ou cole o snippet de `claude-mcp-config.snippet.json` em `~/.claude.json` (root level — não em `settings.json` se este tiver hooks). Depois `/mcp` no Claude Code lista o server `memory` como conectado.
+Ou cole o snippet de `claude-mcp-config.snippet.json` em `~/.claude.json` (root level — não em `settings.json` se este tiver hooks). Depois `/mcp` no Claude Code lista o server `mcp-talks-cc` como conectado.
 
 ## Instalar / reinstalar do zero
 
