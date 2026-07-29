@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { LITERAL_TOKEN_RE } from '../mcp/tools/searchMemory.ts';
+import { LITERAL_TOKEN_RE, TERM_TOKEN_RE } from '../mcp/tools/searchMemory.ts';
 import type { Grade, Profile, QueryLogEntry } from './types.ts';
 
 const STOPWORDS = new Set([
@@ -127,10 +127,12 @@ export function buildProfile(
     return LITERAL_TOKEN_RE.test(q);
   }).length;
 
+  // terminologia usa o regex de vocabulário (palavra de 5+ letras), não o de
+  // token literal: este último ficou estrito pra gatear o BM25 corretamente.
   const termCount = new Map<string, number>();
   for (const q of queries) {
-    LITERAL_TOKEN_RE.lastIndex = 0;
-    for (const m of q.matchAll(LITERAL_TOKEN_RE)) {
+    TERM_TOKEN_RE.lastIndex = 0;
+    for (const m of q.matchAll(TERM_TOKEN_RE)) {
       const tok = m[0];
       if (!STOPWORDS.has(tok.toLowerCase())) termCount.set(tok, (termCount.get(tok) ?? 0) + 1);
     }

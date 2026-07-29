@@ -8,6 +8,12 @@ import { TUNING_BOUNDS, type Tuning } from '../learning/types.ts';
 export const LAMBDA_DEFAULT = 0.7;
 export const HYBRID_VEC_WEIGHT = 0.7;
 
+// Decay de recência: multiplica SÓ o termo de relevância do MMR (ranking),
+// nunca o score reportado. Sem isso um chunk de janeiro empata com o de ontem.
+// Floor alto de propósito: memória velha ainda é o valor do produto.
+export const RECENCY_HALFLIFE_DAYS = 120;
+export const RECENCY_FLOOR = 0.75;
+
 export const DEFAULT_TUNING: Tuning = {
   v: 1,
   updatedAt: '1970-01-01T00:00:00.000Z',

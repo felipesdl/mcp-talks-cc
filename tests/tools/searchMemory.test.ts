@@ -5,6 +5,7 @@ import { createTestClient } from '../helpers.ts';
 
 interface SearchHit {
   score: number;
+  confidence: number | null;
   source: string;
   sessionId: string | null;
   project: string | null;
@@ -12,7 +13,12 @@ interface SearchHit {
 }
 
 interface SearchResult {
-  structuredContent: { hits: SearchHit[] };
+  structuredContent: {
+    hits: SearchHit[];
+    poolVecMedian: number | null;
+    poolSize: number;
+    calibrated: boolean;
+  };
 }
 
 describe('search_memory tool', () => {
@@ -49,6 +55,23 @@ describe('search_memory tool', () => {
     for (const h of r.structuredContent.hits) {
       assert.ok(typeof h.score === 'number');
       assert.ok(h.snippet.length > 0);
+    }
+  });
+
+  it('reports confidence and pool stats', async () => {
+    const r = (await client.callTool({
+      name: 'search_memory',
+      arguments: { query: 'neo4j MCP', k: 5 },
+    })) as unknown as SearchResult;
+    const { hits, poolVecMedian, poolSize, calibrated } = r.structuredContent;
+    assert.ok(poolSize >= hits.length, 'pool deve conter pelo menos os hits devolvidos');
+    if (hits.length > 0) {
+      assert.ok(typeof poolVecMedian === 'number', 'poolVecMedian deve vir preenchido');
+    }
+    for (const h of hits) {
+      assert.ok(h.confidence === null || (h.confidence >= 0 && h.confidence <= 1));
+      // confidence só existe quando a calibração local está pronta
+      assert.equal(h.confidence === null, !calibrated);
     }
   });
 

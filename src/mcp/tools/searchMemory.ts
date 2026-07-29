@@ -3,12 +3,16 @@ import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
 import { embed } from '../../embeddings/localEmbedder.ts';
 import { toToolError } from '../../domain/errors.ts';
-import { getTuning, LAMBDA_DEFAULT, HYBRID_VEC_WEIGHT } from '../tuning.ts';
+import {
+  getTuning,
+  LAMBDA_DEFAULT,
+  HYBRID_VEC_WEIGHT,
+  RECENCY_FLOOR,
+  RECENCY_HALFLIFE_DAYS,
+} from '../tuning.ts';
+import { confidenceFromVec, getScoreCalibration } from '../scoreCalibration.ts';
+import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
-
-// Claude Code não expõe a sessão chamadora na env do MCP child hoje;
-// fica null e o grader resolve por time-window join (src/learning/grading).
-const CALLER_SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
 
 const inputSchema = {
   query: z
@@ -60,6 +64,8 @@ const inputSchema = {
 export interface SearchHit {
   id: string;
   score: number;
+  /** Percentil histórico do vec_score. null = calibração ainda não pronta. */
+  confidence: number | null;
   vec_score: number;
   bm25_score: number | null;
   source: string;
@@ -72,12 +78,50 @@ export interface SearchHit {
   parentKey: string | null;
 }
 
-export const LITERAL_TOKEN_RE =
-  /\b[A-Z]{2,}-\d+\b|\b[\w/-]+\.(?:ts|tsx|php|md|py|go|rb|js|jsx)\b|\b[a-z][A-Za-z0-9_]{4,}\b/g;
+/**
+ * Token literal DE VERDADE: só isso deve ligar o BM25.
+ * Cuidado com padrão frouxo aqui: um branch tipo `\b[a-z][A-Za-z0-9_]{4,}\b`
+ * casa qualquer palavra com 5+ letras ("quando", "memoria"), o que liga hybrid
+ * em toda query em prosa e infla o score de todo hit topo via BM25.
+ */
+export const LITERAL_TOKEN_RE = new RegExp(
+  [
+    '\\b[A-Z]{2,}-\\d+\\b', // EDC-2410
+    '\\b[\\w/.-]+\\.(?:ts|tsx|js|jsx|mjs|php|md|py|go|rb|sql|json|ya?ml|sh|css|scss)\\b', // path/arquivo
+    '\\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*\\b', // camelCase: useEffect, projectBoost
+    '\\b[a-z][a-z0-9]*_[a-z0-9_]+\\b', // snake_case
+    '\\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\\b', // CONST_CASE
+    '\\b[A-Z]{3,}\\b', // sigla: MCP, SQL, JWT
+    '\\b\\d+\\.\\d+(?:\\.\\d+)?\\b', // versão: 5.26, 1.2.3
+  ].join('|'),
+  'g',
+);
 
-function hasLiteralTokens(q: string): boolean {
+/**
+ * Token "de vocabulário" (palavra de 5+ letras). NÃO serve pra gatear hybrid,
+ * só pra extrair terminologia recorrente no profile (src/learning/profile.ts).
+ */
+export const TERM_TOKEN_RE = /\b[a-zA-Zà-úÀ-Ú][A-Za-zà-úÀ-Ú0-9_]{4,}\b/g;
+
+export function hasLiteralTokens(q: string): boolean {
   LITERAL_TOKEN_RE.lastIndex = 0;
   return LITERAL_TOKEN_RE.test(q);
+}
+
+/**
+ * Decay de recência aplicado SÓ no termo de relevância do MMR. Sem isso um
+ * chunk de janeiro empata com o de ontem no ranking.
+ */
+export function recencyMult(
+  timestamp: string | null,
+  nowMs: number = Date.now(),
+): number {
+  if (!timestamp) return 1;
+  const t = Date.parse(timestamp);
+  if (Number.isNaN(t)) return 1;
+  const ageDays = (nowMs - t) / 86_400_000;
+  if (ageDays <= 0) return 1;
+  return Math.max(RECENCY_FLOOR, Math.pow(0.5, ageDays / RECENCY_HALFLIFE_DAYS));
 }
 
 function escapeLucene(q: string): string {
@@ -85,10 +129,17 @@ function escapeLucene(q: string): string {
   return q.replace(/[+\-!(){}\[\]^"~*?:\\/]/g, '\\$&');
 }
 
-function normalizeMax(values: number[]): number[] {
-  const max = Math.max(...values, 0);
-  if (max <= 0) return values.map(() => 0);
-  return values.map((v) => v / max);
+/**
+ * Saturação do BM25 pra [0,1): `s / (s + med)`, com med = mediana do pool
+ * retornado. Antes era max-normalização, que forçava o top a 1.0 sempre e
+ * dava +0.30 fixo (HYBRID_VEC_WEIGHT) no score do primeiro hit, independente
+ * de o match lexical ser bom ou ruim. Monótona e sem teto artificial.
+ */
+export function saturateBm25(values: number[]): number[] {
+  const sorted = [...values].filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  const med = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)]! : 0;
+  const c = med > 0 ? med : 1;
+  return values.map((v) => (v > 0 ? v / (v + c) : 0));
 }
 
 function cosine(a: number[], b: number[]): number {
@@ -145,6 +196,14 @@ function mmrSelect(
   return selected;
 }
 
+export interface SearchResult {
+  hits: SearchHit[];
+  /** Fundo daquela query: mediana de vec_score do pool de candidatos. */
+  poolVecMedian: number | null;
+  poolSize: number;
+  calibrated: boolean;
+}
+
 async function searchMemory(args: {
   query: string;
   k?: number;
@@ -154,24 +213,30 @@ async function searchMemory(args: {
   since?: string;
   diversity?: number;
   hybrid?: boolean;
-}): Promise<SearchHit[]> {
+}): Promise<SearchResult> {
   const tuning = getTuning();
   const k = args.k ?? tuning.k;
   const lambda = args.diversity ?? LAMBDA_DEFAULT;
   const hybrid = (args.hybrid ?? true) && hasLiteralTokens(args.query);
-  const oversample = Math.min(k * 5, 200);
+  // 60 e não 200: a query do vetor traz `node.embedding` (1024 doubles) de cada
+  // candidato pro MMR client-side, e isso era a maior parte do p90 de latência.
+  const oversample = Math.min(k * 5, 60);
 
   // project é soft boost por padrão (regras cruzam repos); hard filter só com projectStrict
   const projectFilter = args.projectStrict ? (args.project ?? null) : null;
+  const nowMs = Date.now();
   const boostOf = (c: Candidate): number =>
     (args.project && !args.projectStrict && c.data.project === args.project
       ? tuning.projectBoost
       : 1) *
     (tuning.perSourceKind[c.data.source] ?? 1) *
-    (c.data.project ? (tuning.perProject[c.data.project] ?? 1) : 1);
+    (c.data.project ? (tuning.perProject[c.data.project] ?? 1) : 1) *
+    recencyMult(c.data.timestamp, nowMs);
+
+  const empty: SearchResult = { hits: [], poolVecMedian: null, poolSize: 0, calibrated: false };
 
   const [qvec] = await embed([args.query.trim()]);
-  if (!qvec) return [];
+  if (!qvec) return empty;
 
   return withSession(async (s) => {
     // (1) Vector candidates
@@ -219,9 +284,9 @@ async function searchMemory(args: {
           },
         );
         const rawScores = ftRes.records.map((r) => Number(r.get('score')));
-        const normalized = normalizeMax(rawScores);
+        const saturated = saturateBm25(rawScores);
         ftRes.records.forEach((r, i) => {
-          ftMap.set(r.get('id') as string, normalized[i] ?? 0);
+          ftMap.set(r.get('id') as string, saturated[i] ?? 0);
         });
       } catch (e) {
         // fulltext index may not exist yet — fall back to vector only
@@ -254,7 +319,13 @@ async function searchMemory(args: {
       });
     }
 
-    if (candidates.length === 0) return [];
+    if (candidates.length === 0) return empty;
+
+    // fundo da query: mediana de vec do pool, pra o caller ver o quão alto o
+    // piso de similaridade está naquela busca (bge-m3 raramente desce de 0.8)
+    const poolVec = candidates.map((c) => c.vec_score).sort((a, b) => a - b);
+    const poolVecMedian = poolVec[Math.floor(poolVec.length / 2)] ?? null;
+    const calibration = getScoreCalibration();
 
     // (4) MMR (ranking usa boosts aprendidos; scores reportados ficam crus)
     const picked = mmrSelect(candidates, lambda, k, hybrid, boostOf);
@@ -283,13 +354,15 @@ async function searchMemory(args: {
       });
     }
 
-    return picked.map((c) => {
+    const hits = picked.map((c) => {
       const ctx = ctxMap.get(c.id);
       return {
         id: c.id,
-        // score RAW (sem boost): thresholds absolutos do CLAUDE.md (>=0.70 etc.)
-        // dependem dessa calibração. Ordem dos hits pode divergir do score.
+        // score RAW (sem boost) serve pra ORDENAÇÃO e comparação dentro da
+        // mesma query. Pra decidir se cita, use `confidence`: o score cru não
+        // é comparável entre queries (ver src/mcp/scoreCalibration.ts).
         score: rawScore(c, hybrid),
+        confidence: confidenceFromVec(c.vec_score, calibration),
         vec_score: c.vec_score,
         bm25_score: c.bm25_score,
         source: c.data.source,
@@ -302,6 +375,13 @@ async function searchMemory(args: {
         parentKey: ctx?.parentKey ?? null,
       };
     });
+
+    return {
+      hits,
+      poolVecMedian,
+      poolSize: candidates.length,
+      calibrated: calibration?.ready === true,
+    };
   });
 }
 
@@ -310,18 +390,20 @@ export function registerSearchMemoryTool(server: McpServer): void {
     'search_memory',
     {
       description:
-        'Hybrid semantic + fulltext search across your Claude Code history (conversations, tool outputs, plans, task memory, todos). Returns top-k chunks diversified via MMR (avoids 5 hits from same session). **Use BEFORE answering questions about past decisions, approaches, or context.** Pass `diversity` (0..1, default 0.7) to balance relevance vs variety. Auto-detects literal tokens (ABC-XXXX, file paths, identifiers) to combine BM25 with vector scoring. `project` is a soft ranking boost (cross-repo hits stay visible); result order may differ from raw `score`, which stays uncalibrated by learned boosts.',
+        'Hybrid semantic + fulltext search across your Claude Code history (conversations, tool outputs, plans, task memory, todos). Returns top-k chunks diversified via MMR (avoids 5 hits from same session). **Use BEFORE answering questions about past decisions, approaches, or context.** Pass `diversity` (0..1, default 0.7) to balance relevance vs variety. BM25 only kicks in for genuinely literal tokens (ABC-1234, file paths, camelCase identifiers, acronyms); plain prose stays pure vector. **Read `confidence` (0..1), not `score`, to decide whether to cite a hit**: confidence is the hit\'s vec_score percentile against the historical distribution, so it is comparable across queries, while `score` is only meaningful for ordering within one query. `confidence` is null until the local calibration has enough samples. `project` is a soft ranking boost (cross-repo hits stay visible).',
       inputSchema,
     },
     async (args) => {
       try {
         const t0 = Date.now();
-        const hits = await searchMemory(args);
+        const { hits, poolVecMedian, poolSize, calibrated } = await searchMemory(args);
+        const caller = resolveCallerSession();
         void logQuery({
           v: 1,
           ts: new Date().toISOString(),
           tool: 'search_memory',
-          sessionId: CALLER_SESSION_ID,
+          sessionId: caller.sessionId,
+          callerProject: caller.project,
           query: args.query,
           k: args.k ?? null,
           scope: args.scope ?? null,
@@ -342,23 +424,30 @@ export function registerSearchMemoryTool(server: McpServer): void {
             bm25Score: h.bm25_score,
           })),
         });
-        const text =
+        const header =
+          `pool: ${poolSize} candidatos, vec mediano=${poolVecMedian?.toFixed(3) ?? '-'}` +
+          (calibrated
+            ? ' | confidence = percentil histórico do vec (use isto pra decidir se cita)'
+            : ' | confidence indisponível (calibração ainda coletando amostras)');
+        const body =
           hits.length === 0
             ? 'No matches in indexed memory.'
             : hits
                 .map((h, i) => {
+                  const conf =
+                    h.confidence !== null ? h.confidence.toFixed(2) : 'n/a';
                   const bm25 =
                     h.bm25_score !== null ? ` bm25=${h.bm25_score.toFixed(3)}` : '';
                   const ctx =
                     h.neighbors.length > 0
                       ? `\n  context: ${h.neighbors.map((n) => n.slice(0, 100)).join(' | ')}`
                       : '';
-                  return `[${i + 1}] score=${h.score.toFixed(3)} vec=${h.vec_score.toFixed(3)}${bm25} source=${h.source} project=${h.project ?? '-'} sessionId=${h.sessionId ?? '-'} parent=${h.parentLabel}/${h.parentKey}\n${h.snippet}${ctx}`;
+                  return `[${i + 1}] conf=${conf} score=${h.score.toFixed(3)} vec=${h.vec_score.toFixed(3)}${bm25} source=${h.source} project=${h.project ?? '-'} sessionId=${h.sessionId ?? '-'} parent=${h.parentLabel}/${h.parentKey}\n${h.snippet}${ctx}`;
                 })
                 .join('\n\n');
         return {
-          content: [{ type: 'text', text }],
-          structuredContent: { hits },
+          content: [{ type: 'text', text: `${header}\n\n${body}` }],
+          structuredContent: { hits, poolVecMedian, poolSize, calibrated },
         };
       } catch (e) {
         const err = toToolError(e);
