@@ -68,6 +68,26 @@ export function sanitizeTuning(raw: unknown): Tuning {
 }
 
 /**
+ * Igualdade semântica de tuning: ignora `updatedAt` e ordem de chaves.
+ * Serve pro self-tune saber se o candidate já é o tuning aplicado — sem isso
+ * o primer cobra "TUNING PENDENTE" pra sempre por uma proposta que não muda nada.
+ */
+export function tuningEquals(a: Tuning, b: Tuning): boolean {
+  const canon = (t: Tuning): string => {
+    const sorted = (r: Record<string, number>): Record<string, number> =>
+      Object.fromEntries(Object.entries(r).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+    return JSON.stringify({
+      v: t.v,
+      projectBoost: t.projectBoost,
+      k: t.k,
+      perSourceKind: sorted(t.perSourceKind),
+      perProject: sorted(t.perProject),
+    });
+  };
+  return canon(a) === canon(b);
+}
+
+/**
  * Tuning aceito (tuning.json), cacheado em module scope.
  * Re-stat no máx 1x/min; entre checks, zero syscall.
  * Ausente/corrupto → último valor bom ou defaults (== comportamento sem loop).

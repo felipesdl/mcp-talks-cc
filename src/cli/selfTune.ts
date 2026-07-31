@@ -13,7 +13,7 @@ import { calibrateEcho } from '../learning/grading/echo.ts';
 import { buildProfile } from '../learning/profile.ts';
 import { buildPrimer, type PendingCandidateInfo } from '../learning/primer.ts';
 import { buildTuningProposal } from '../learning/tuner.ts';
-import { getTuning } from '../mcp/tuning.ts';
+import { getTuning, sanitizeTuning, tuningEquals } from '../mcp/tuning.ts';
 import { buildScoreCalibration } from '../mcp/scoreCalibration.ts';
 import { gradeSchema, MIN_ECHO_SAMPLES, MIN_SCORE_SAMPLES, type EchoCalibration, type Grade, type QueryLogEntry, type Tuning } from '../learning/types.ts';
 
@@ -174,7 +174,15 @@ async function main(): Promise<void> {
     );
     await writeAtomic(learningPaths.tuningRationale, rationale);
     let pendingCandidate: PendingCandidateInfo | null = null;
-    if (candidate) {
+    if (candidate && tuningEquals(sanitizeTuning(candidate), getTuning())) {
+      // Proposta idêntica ao tuning já aplicado não é pendência. Sem esse ramo,
+      // todo run pós-accept regenera o mesmo candidate e o primer cobra um
+      // accept que já aconteceu.
+      await rm(learningPaths.tuningCandidate, { force: true });
+      console.log(
+        `[self-tune] candidate == tuning aplicado (${graded.length} grades), nada a promover. Detalhe: ${learningPaths.tuningRationale}`,
+      );
+    } else if (candidate) {
       // mesmo conteúdo do run anterior -> preserva updatedAt p/ o primer mostrar a idade real da pendência
       const prev = await readJson<Tuning>(learningPaths.tuningCandidate);
       const sameContent =

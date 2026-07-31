@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const dir = await mkdtemp(join(tmpdir(), 'mcp-tuning-test-'));
 process.env.CACHE_DIR = dir;
 
-const { getTuning, resetTuningCache, sanitizeTuning, DEFAULT_TUNING } = await import(
+const { getTuning, resetTuningCache, sanitizeTuning, tuningEquals, DEFAULT_TUNING } = await import(
   '../../src/mcp/tuning.ts'
 );
 
@@ -34,6 +34,32 @@ describe('sanitizeTuning', () => {
     assert.equal(t.perSourceKind.plan, 0.85);
     assert.equal(t.perProject['/p'], 1.2);
     assert.equal(t.k, 50);
+  });
+});
+
+describe('tuningEquals', () => {
+  const base = sanitizeTuning({
+    projectBoost: 1.15,
+    perSourceKind: { conversation: 0.917 },
+    perProject: { '/a': 0.9, '/b': 0.959 },
+    k: 8,
+  });
+
+  it('ignora updatedAt (candidate recém-gerado == tuning aplicado)', () => {
+    assert.ok(tuningEquals({ ...base, updatedAt: '2026-01-01T00:00:00Z' }, { ...base, updatedAt: '2026-07-31T00:00:00Z' }));
+  });
+
+  it('ignora ordem das chaves dos records', () => {
+    const flipped = { ...base, perProject: { '/b': 0.959, '/a': 0.9 } };
+    assert.ok(tuningEquals(base, flipped));
+  });
+
+  it('detecta mudança de valor, de chave nova e de chave removida', () => {
+    assert.ok(!tuningEquals(base, { ...base, projectBoost: 1.2 }));
+    assert.ok(!tuningEquals(base, { ...base, k: 12 }));
+    assert.ok(!tuningEquals(base, { ...base, perProject: { ...base.perProject, '/c': 1.0 } }));
+    assert.ok(!tuningEquals(base, { ...base, perProject: { '/a': 0.9 } }));
+    assert.ok(!tuningEquals(base, { ...base, perSourceKind: {} }));
   });
 });
 
