@@ -29,7 +29,22 @@ export const config = {
   chunk: {
     size: 800,
     overlap: 150,
-    minChars: 40, // skip near-empty messages
+    minChars: 40, // skip near-empty messages (plan/todo/task_memory)
+  },
+  // Gate de qualidade só de conversa (ver src/ingest/quality.ts). Plan/todo/
+  // task_memory são documentos, não têm o problema de filler navegacional.
+  quality: {
+    /** Abaixo disso não sobra nada nem com sinal de código. */
+    hardFloorChars: 40,
+    /**
+     * Floor pra texto SEM sinal de conteúdo. Conservador de propósito: o filtro
+     * de `filler` já pega a família de anúncio independente de tamanho, então o
+     * único trabalho deste floor é chatter de processo ("boa, vamos fazer os
+     * commits + push"). Em 80 o dry-run derrubava conclusão curta de verdade
+     * ("All 3 conflicts trivial, additivos, ortogonais"), então 60: com pool de
+     * recall de 500 e MMR, ruído leve custa menos que sinal perdido.
+     */
+    minConversationChars: 60,
   },
 } as const;
 
