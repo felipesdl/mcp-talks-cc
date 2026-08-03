@@ -29,6 +29,8 @@ export interface QueryLogEntry {
   scores: number[];
   latencyMs: number;
   hits: QueryLogHit[];
+  /** Piso de similaridade daquela busca (mediana do pool de recall). */
+  poolVecMedian?: number | null;
   refSessionId?: string | null; // get_session_transcript alvo
   refChunkId?: string | null; // find_similar_chunks origem
 }
@@ -61,6 +63,7 @@ export const queryLogEntrySchema = z.object({
       bm25Score: z.number().nullable(),
     }),
   ),
+  poolVecMedian: z.number().nullable().optional(),
   refSessionId: z.string().nullable().optional(),
   refChunkId: z.string().nullable().optional(),
 });
@@ -129,6 +132,14 @@ export interface ScoreCalibration {
   nSamples: number;
   ready: boolean; // nSamples >= MIN_SCORE_SAMPLES
   percentiles: Record<string, number>; // p10..p95 de vec_score
+  /**
+   * CDF empírica da MARGEM do hit sobre o piso da própria query
+   * (vec_score - poolVecMedian). Opcional: só existe depois que o query-log
+   * passou a gravar poolVecMedian. Sem ela, `confidence` cai no percentil
+   * absoluto puro, que é o comportamento antigo.
+   */
+  marginPercentiles?: Record<string, number>;
+  nMarginSamples?: number;
 }
 
 // ── profile.json ─────────────────────────────────────────────────────────────
