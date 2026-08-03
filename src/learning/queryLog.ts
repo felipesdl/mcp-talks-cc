@@ -20,10 +20,21 @@ async function rotateIfNeeded(): Promise<void> {
 }
 
 /**
+ * Kill switch da instrumentação. Existe por causa da suite: cada `npm test`
+ * dispara ~7 buscas sintéticas ('neo4j MCP', 'plano'), e elas entravam no mesmo
+ * query-log que alimenta a calibração de score e as grades. Medido depois de um
+ * reset de estado: 96 das 138 amostras de vec eram de teste (69%), o que
+ * deslocou a mediana de 0.883 pra 0.8235. Calibração tem que refletir busca de
+ * verdade, senão o gate de confidence sai calibrado contra tráfego fabricado.
+ */
+const DISABLED = process.env.MCP_TALKS_DISABLE_QUERY_LOG === '1';
+
+/**
  * Append best-effort no query-log. Nunca lança — instrumentação não pode
  * quebrar o hot path da busca. Chamar com `void logQuery(...)`.
  */
 export async function logQuery(entry: QueryLogEntry): Promise<void> {
+  if (DISABLED) return;
   try {
     await mkdir(learningPaths.cacheDir, { recursive: true });
     await rotateIfNeeded();

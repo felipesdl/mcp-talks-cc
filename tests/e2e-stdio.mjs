@@ -4,7 +4,11 @@ import { createInterface } from 'node:readline';
 const proc = spawn(
   'node',
   ['--env-file=.env', '--experimental-strip-types', 'src/mcp/server.ts'],
-  { stdio: ['pipe', 'pipe', 'inherit'] },
+  {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    // ver src/learning/queryLog.ts: busca de teste fora da calibração
+    env: { ...process.env, MCP_TALKS_DISABLE_QUERY_LOG: '1' },
+  },
 );
 
 const rl = createInterface({ input: proc.stdout });
