@@ -9,6 +9,10 @@ import {
   HYBRID_VEC_WEIGHT,
   RECENCY_FLOOR,
   RECENCY_HALFLIFE_DAYS,
+  RECALL_POOL,
+  RECALL_POOL_MAX,
+  MMR_POOL_MULT,
+  MMR_POOL_MAX,
 } from '../tuning.ts';
 import { confidenceFromVec, getScoreCalibration } from '../scoreCalibration.ts';
 import { resolveCallerSession } from '../callerSession.ts';
@@ -148,16 +152,34 @@ function cosine(a: number[], b: number[]): number {
   return dot; // already normalized (HF normalize: true)
 }
 
-interface Candidate {
+/** Metadata do estágio A: tudo que dá pra rankear sem trafegar o embedding. */
+interface CandidateMeta {
+  id: string;
+  source: string;
+  sessionId: string | null;
+  project: string | null;
+  timestamp: string | null;
+}
+
+/** Candidato do estágio A (pool largo): sem embedding, sem texto. */
+interface PreCandidate {
   id: string;
   vec_score: number;
   bm25_score: number | null;
+  meta: CandidateMeta;
+}
+
+/** Finalista do estágio B: embedding e texto buscados só pra estes. */
+interface Candidate extends PreCandidate {
   embedding: number[];
-  data: Omit<SearchHit, 'score' | 'vec_score' | 'bm25_score' | 'neighbors'>;
+  snippet: string;
 }
 
 /** Score híbrido cru (sem boosts) — é o que sai no campo `score` dos hits. */
-function rawScore(c: Candidate, hybrid: boolean): number {
+function rawScore(
+  c: Pick<PreCandidate, 'vec_score' | 'bm25_score'>,
+  hybrid: boolean,
+): number {
   return hybrid && c.bm25_score !== null
     ? HYBRID_VEC_WEIGHT * c.vec_score + (1 - HYBRID_VEC_WEIGHT) * c.bm25_score
     : c.vec_score;
@@ -218,20 +240,20 @@ async function searchMemory(args: {
   const k = args.k ?? tuning.k;
   const lambda = args.diversity ?? LAMBDA_DEFAULT;
   const hybrid = (args.hybrid ?? true) && hasLiteralTokens(args.query);
-  // 60 e não 200: a query do vetor traz `node.embedding` (1024 doubles) de cada
-  // candidato pro MMR client-side, e isso era a maior parte do p90 de latência.
-  const oversample = Math.min(k * 5, 60);
+  // Estágio B: só os finalistas trazem `node.embedding` (1024 doubles) pro MMR
+  // client-side, que era a maior parte do p90 de latência.
+  const mmrPool = Math.min(k * MMR_POOL_MULT, MMR_POOL_MAX);
 
   // project é soft boost por padrão (regras cruzam repos); hard filter só com projectStrict
   const projectFilter = args.projectStrict ? (args.project ?? null) : null;
   const nowMs = Date.now();
-  const boostOf = (c: Candidate): number =>
-    (args.project && !args.projectStrict && c.data.project === args.project
+  const boostOf = (m: CandidateMeta): number =>
+    (args.project && !args.projectStrict && m.project === args.project
       ? tuning.projectBoost
       : 1) *
-    (tuning.perSourceKind[c.data.source] ?? 1) *
-    (c.data.project ? (tuning.perProject[c.data.project] ?? 1) : 1) *
-    recencyMult(c.data.timestamp, nowMs);
+    (tuning.perSourceKind[m.source] ?? 1) *
+    (m.project ? (tuning.perProject[m.project] ?? 1) : 1) *
+    recencyMult(m.timestamp, nowMs);
 
   const empty: SearchResult = { hits: [], poolVecMedian: null, poolSize: 0, calibrated: false };
 
@@ -239,98 +261,134 @@ async function searchMemory(args: {
   if (!qvec) return empty;
 
   return withSession(async (s) => {
-    // (1) Vector candidates
-    const vecRes = await s.run(
-      `CALL db.index.vector.queryNodes('chunks_embedding', toInteger($oversample), $vec)
-       YIELD node, score
-       WHERE ($scope IS NULL OR node.sourceKind IN $scope)
-         AND ($project IS NULL OR node.projectPath = $project)
-         AND ($since IS NULL OR node.timestamp >= $since)
-       RETURN node.id AS id,
-              score AS vec_score,
-              node.text AS snippet,
-              node.embedding AS embedding,
-              node.sourceKind AS source,
-              node.sessionId AS sessionId,
-              node.projectPath AS project,
-              node.timestamp AS timestamp
-       ORDER BY score DESC`,
-      {
-        vec: qvec,
-        oversample,
-        scope: args.scope ?? null,
-        project: projectFilter,
-        since: args.since ?? null,
-      },
-    );
-
-    // (2) Fulltext candidates (parallel, optional)
-    const ftMap = new Map<string, number>();
-    if (hybrid) {
-      try {
-        const ftRes = await s.run(
-          `CALL db.index.fulltext.queryNodes('chunks_text', $query, { limit: toInteger($limit) })
-           YIELD node, score
-           WHERE ($scope IS NULL OR node.sourceKind IN $scope)
-             AND ($project IS NULL OR node.projectPath = $project)
-             AND ($since IS NULL OR node.timestamp >= $since)
-           RETURN node.id AS id, score`,
-          {
-            query: escapeLucene(args.query),
-            limit: oversample,
-            scope: args.scope ?? null,
-            project: projectFilter,
-            since: args.since ?? null,
-          },
-        );
-        const rawScores = ftRes.records.map((r) => Number(r.get('score')));
-        const saturated = saturateBm25(rawScores);
-        ftRes.records.forEach((r, i) => {
-          ftMap.set(r.get('id') as string, saturated[i] ?? 0);
-        });
-      } catch (e) {
-        // fulltext index may not exist yet — fall back to vector only
-        console.error('[search] fulltext skipped:', e instanceof Error ? e.message : String(e));
-      }
-    }
-
-    // (3) Merge into Candidate[]
-    const seen = new Set<string>();
-    const candidates: Candidate[] = [];
-    for (const rec of vecRes.records) {
-      const id = rec.get('id') as string;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      candidates.push({
-        id,
-        vec_score: Number(rec.get('vec_score')),
-        bm25_score: ftMap.has(id) ? ftMap.get(id)! : null,
-        embedding: rec.get('embedding') as number[],
-        data: {
-          id,
-          source: rec.get('source'),
-          sessionId: rec.get('sessionId'),
-          project: rec.get('project'),
-          timestamp: rec.get('timestamp'),
-          snippet: rec.get('snippet'),
-          parentLabel: null,
-          parentKey: null,
+    // (1) Estágio A — pool largo de recall, SEM embedding nem texto.
+    // scope/project/since são post-filter (o índice vetorial do Neo4j 5.26
+    // community não aceita pre-filter), então o pool precisa ser fundo o
+    // bastante pra sobrar material depois deles.
+    const stageA = async (poolSize: number): Promise<PreCandidate[]> => {
+      const vecRes = await s.run(
+        `CALL db.index.vector.queryNodes('chunks_embedding', toInteger($poolSize), $vec)
+         YIELD node, score
+         WHERE ($scope IS NULL OR node.sourceKind IN $scope)
+           AND ($project IS NULL OR node.projectPath = $project)
+           AND ($since IS NULL OR node.timestamp >= $since)
+         RETURN node.id AS id,
+                score AS vec_score,
+                node.sourceKind AS source,
+                node.sessionId AS sessionId,
+                node.projectPath AS project,
+                node.timestamp AS timestamp
+         ORDER BY score DESC`,
+        {
+          vec: qvec,
+          poolSize,
+          scope: args.scope ?? null,
+          project: projectFilter,
+          since: args.since ?? null,
         },
-      });
+      );
+
+      // Fulltext no mesmo tamanho de pool; BM25 satura sobre ele.
+      const ftMap = new Map<string, number>();
+      if (hybrid) {
+        try {
+          const ftRes = await s.run(
+            `CALL db.index.fulltext.queryNodes('chunks_text', $query, { limit: toInteger($limit) })
+             YIELD node, score
+             WHERE ($scope IS NULL OR node.sourceKind IN $scope)
+               AND ($project IS NULL OR node.projectPath = $project)
+               AND ($since IS NULL OR node.timestamp >= $since)
+             RETURN node.id AS id, score`,
+            {
+              query: escapeLucene(args.query),
+              limit: poolSize,
+              scope: args.scope ?? null,
+              project: projectFilter,
+              since: args.since ?? null,
+            },
+          );
+          const rawScores = ftRes.records.map((r) => Number(r.get('score')));
+          const saturated = saturateBm25(rawScores);
+          ftRes.records.forEach((r, i) => {
+            ftMap.set(r.get('id') as string, saturated[i] ?? 0);
+          });
+        } catch (e) {
+          // fulltext index may not exist yet — fall back to vector only
+          console.error('[search] fulltext skipped:', e instanceof Error ? e.message : String(e));
+        }
+      }
+
+      const seen = new Set<string>();
+      const out: PreCandidate[] = [];
+      for (const rec of vecRes.records) {
+        const id = rec.get('id') as string;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          id,
+          vec_score: Number(rec.get('vec_score')),
+          bm25_score: ftMap.has(id) ? ftMap.get(id)! : null,
+          meta: {
+            id,
+            source: rec.get('source'),
+            sessionId: rec.get('sessionId'),
+            project: rec.get('project'),
+            timestamp: rec.get('timestamp'),
+          },
+        });
+      }
+      return out;
+    };
+
+    let pool = await stageA(RECALL_POOL);
+    // Post-filter apertado (scope/projectStrict/since) devolvia menos que k
+    // mesmo com material de sobra no grafo: aprofunda uma vez.
+    if (pool.length < k && RECALL_POOL < RECALL_POOL_MAX) {
+      pool = await stageA(RECALL_POOL_MAX);
     }
+    if (pool.length === 0) return empty;
 
-    if (candidates.length === 0) return empty;
-
-    // fundo da query: mediana de vec do pool, pra o caller ver o quão alto o
-    // piso de similaridade está naquela busca (bge-m3 raramente desce de 0.8)
-    const poolVec = candidates.map((c) => c.vec_score).sort((a, b) => a - b);
+    // fundo da query: mediana de vec do pool de RECALL (não do top-k), pra o
+    // caller ver o quão alto o piso de similaridade está naquela busca. É a
+    // estimativa de ruído que a confidence consome (ver scoreCalibration.ts).
+    const poolVec = pool.map((c) => c.vec_score).sort((a, b) => a - b);
     const poolVecMedian = poolVec[Math.floor(poolVec.length / 2)] ?? null;
     const calibration = getScoreCalibration();
 
-    // (4) MMR (ranking usa boosts aprendidos; scores reportados ficam crus)
-    const picked = mmrSelect(candidates, lambda, k, hybrid, boostOf);
+    // (2) Re-ranking com os boosts aprendidos ANTES do corte. Aqui é que
+    // perProject/perSourceKind/recência ganham poder de trazer pro top-k um
+    // chunk que o cosseno puro tinha deixado de fora.
+    const finalists = [...pool]
+      .sort(
+        (a, b) =>
+          rawScore(b, hybrid) * boostOf(b.meta) - rawScore(a, hybrid) * boostOf(a.meta),
+      )
+      .slice(0, mmrPool);
 
-    // (5) Context expansion + parent lookup
+    // (3) Estágio B — embedding e texto só dos finalistas.
+    const embRes = await s.run(
+      `UNWIND $ids AS id
+       MATCH (c:Chunk { id: id })
+       RETURN c.id AS id, c.text AS snippet, c.embedding AS embedding`,
+      { ids: finalists.map((f) => f.id) },
+    );
+    const embMap = new Map<string, { snippet: string; embedding: number[] }>();
+    for (const rec of embRes.records) {
+      embMap.set(rec.get('id') as string, {
+        snippet: rec.get('snippet') as string,
+        embedding: rec.get('embedding') as number[],
+      });
+    }
+    const candidates: Candidate[] = finalists.flatMap((f) => {
+      const e = embMap.get(f.id);
+      return e ? [{ ...f, snippet: e.snippet, embedding: e.embedding }] : [];
+    });
+    if (candidates.length === 0) return empty;
+
+    // (4) MMR (ranking usa boosts aprendidos; scores reportados ficam crus)
+    const picked = mmrSelect(candidates, lambda, k, hybrid, (c) => boostOf(c.meta));
+
+    // (5) Context expansion + parent lookup (só dos k finais)
     const ids = picked.map((p) => p.id);
     const ctxRes = await s.run(
       `UNWIND $ids AS id
@@ -362,14 +420,14 @@ async function searchMemory(args: {
         // mesma query. Pra decidir se cita, use `confidence`: o score cru não
         // é comparável entre queries (ver src/mcp/scoreCalibration.ts).
         score: rawScore(c, hybrid),
-        confidence: confidenceFromVec(c.vec_score, calibration),
+        confidence: confidenceFromVec(c.vec_score, calibration, poolVecMedian),
         vec_score: c.vec_score,
         bm25_score: c.bm25_score,
-        source: c.data.source,
-        sessionId: c.data.sessionId,
-        project: c.data.project,
-        timestamp: c.data.timestamp,
-        snippet: c.data.snippet,
+        source: c.meta.source,
+        sessionId: c.meta.sessionId,
+        project: c.meta.project,
+        timestamp: c.meta.timestamp,
+        snippet: c.snippet,
         neighbors: ctx?.neighbors ?? [],
         parentLabel: ctx?.parentLabel ?? null,
         parentKey: ctx?.parentKey ?? null,
@@ -379,7 +437,9 @@ async function searchMemory(args: {
     return {
       hits,
       poolVecMedian,
-      poolSize: candidates.length,
+      // pool de RECALL, não de finalistas: é o denominador que dá sentido ao
+      // poolVecMedian reportado.
+      poolSize: pool.length,
       calibrated: calibration?.ready === true,
     };
   });
@@ -415,6 +475,8 @@ export function registerSearchMemoryTool(server: McpServer): void {
           topScore: hits.length > 0 ? Math.max(...hits.map((h) => h.score)) : null,
           scores: hits.map((h) => h.score),
           latencyMs: Date.now() - t0,
+          // piso da query: o self-tune calibra a CDF de margens a partir disto
+          poolVecMedian,
           hits: hits.map((h) => ({
             id: h.id,
             sessionId: h.sessionId,

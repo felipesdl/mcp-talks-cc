@@ -8,6 +8,23 @@ import { TUNING_BOUNDS, type Tuning } from '../learning/types.ts';
 export const LAMBDA_DEFAULT = 0.7;
 export const HYBRID_VEC_WEIGHT = 0.7;
 
+// Retrieval em dois estágios. O bge-m3 devolve cosseno entre 0.87 e 0.91 pra
+// praticamente qualquer par, então o ranking por similaridade pura é quase
+// arbitrário nessa faixa: medido em 2026-08-03, 2000 candidatos couberam em
+// 0.043 de spread e o chunk correto de uma query dirigida estava no rank 149.
+// Um pool de 40 (o `k * 5` antigo) é loteria, e boost de ranking não recupera
+// o que nunca entrou no pool.
+//
+// Estágio A (RECALL_POOL): pool largo SEM embedding — só metadata, barato de
+// trafegar. É onde os boosts aprendidos passam a agir de fato.
+// Estágio B (MMR_POOL_MULT): busca embedding só dos finalistas, porque 1024
+// doubles por candidato é o que dominava o p90 de latência.
+export const RECALL_POOL = 500;
+/** Retry quando scope/project/since derrubam o pool abaixo de k (post-filter). */
+export const RECALL_POOL_MAX = 2000;
+export const MMR_POOL_MULT = 5;
+export const MMR_POOL_MAX = 60;
+
 // Decay de recência: multiplica SÓ o termo de relevância do MMR (ranking),
 // nunca o score reportado. Sem isso um chunk de janeiro empata com o de ontem.
 // Floor alto de propósito: memória velha ainda é o valor do produto.
