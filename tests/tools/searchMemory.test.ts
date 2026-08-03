@@ -75,6 +75,36 @@ describe('search_memory tool', () => {
     }
   });
 
+  it('pool de recall é fundo, não k*5', async () => {
+    const r = (await client.callTool({
+      name: 'search_memory',
+      arguments: { query: 'neo4j MCP', k: 5 },
+    })) as unknown as SearchResult;
+    // Antes o pool era min(k*5, 60) = 25 aqui, e saía do cosseno puro. Num
+    // corpus onde 2000 candidatos cabem em 0.043 de spread, esse corte raso
+    // deixava o chunk certo fora do alcance de qualquer boost (medido em
+    // 2026-08-03: chunk correto no rank 149, pool 40).
+    assert.ok(
+      r.structuredContent.poolSize > 60,
+      `pool de recall deve ser fundo, veio ${r.structuredContent.poolSize}`,
+    );
+  });
+
+  it('filtro não estrangula o top-k (post-filter sobre pool fundo)', async () => {
+    const r = (await client.callTool({
+      name: 'search_memory',
+      arguments: { query: 'plano de implementação', k: 5, scope: ['plan'] },
+    })) as unknown as SearchResult;
+    const { hits, poolSize } = r.structuredContent;
+    if (hits.length === 0) return; // grafo local sem plans indexados
+    // scope/project/since são post-filter no Neo4j 5.26; o pool fundo é o que
+    // garante que ainda sobre material pra encher k depois do filtro.
+    assert.ok(
+      hits.length >= Math.min(5, poolSize),
+      `esperava k hits (ou o pool todo), veio ${hits.length} com pool ${poolSize}`,
+    );
+  });
+
   it('respects scope filter', async () => {
     const r = (await client.callTool({
       name: 'search_memory',
