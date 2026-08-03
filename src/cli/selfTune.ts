@@ -144,10 +144,19 @@ async function main(): Promise<void> {
     const windowStartForScores = new Date(
       Date.now() - WINDOW_DAYS * 24 * 3600 * 1000,
     ).toISOString();
-    const vecScores = entries
-      .filter((e) => e.tool === 'search_memory' && e.ts >= windowStartForScores)
-      .flatMap((e) => e.hits.map((h) => h.vecScore));
-    const scoreCalibration = buildScoreCalibration(vecScores, MIN_SCORE_SAMPLES);
+    const scoreEntries = entries.filter(
+      (e) => e.tool === 'search_memory' && e.ts >= windowStartForScores,
+    );
+    const vecScores = scoreEntries.flatMap((e) => e.hits.map((h) => h.vecScore));
+    // CDF da margem sobre o piso da query. Só entradas que já gravaram
+    // poolVecMedian contam; enquanto não houver amostra, confidence segue só
+    // absoluta (ver src/mcp/scoreCalibration.ts).
+    const margins = scoreEntries.flatMap((e) =>
+      typeof e.poolVecMedian === 'number'
+        ? e.hits.map((h) => h.vecScore - e.poolVecMedian!)
+        : [],
+    );
+    const scoreCalibration = buildScoreCalibration(vecScores, MIN_SCORE_SAMPLES, margins);
     await writeAtomic(
       learningPaths.scoreCalibration,
       JSON.stringify(scoreCalibration, null, 2),

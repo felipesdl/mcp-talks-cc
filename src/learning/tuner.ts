@@ -50,8 +50,14 @@ export function buildTuningProposal(
   if (scoreCalibration) {
     lines.push('## score / confidence');
     if (scoreCalibration.ready) {
+      // passa o piso da query pra confidence do rationale bater com a que o
+      // search_memory reporta (min entre percentil absoluto e de margem)
       const confs = searches
-        .flatMap((g) => g.entry.hits.map((h) => confidenceFromVec(h.vecScore, scoreCalibration)))
+        .flatMap((g) =>
+          g.entry.hits.map((h) =>
+            confidenceFromVec(h.vecScore, scoreCalibration, g.entry.poolVecMedian),
+          ),
+        )
         .filter((v): v is number => v !== null)
         .sort((a, b) => a - b);
       const q = (p: number): string =>
@@ -60,7 +66,9 @@ export function buildTuningProposal(
           : '-';
       const topConfs = searches
         .map((g) => {
-          const vs = g.entry.hits.map((h) => confidenceFromVec(h.vecScore, scoreCalibration) ?? 0);
+          const vs = g.entry.hits.map(
+            (h) => confidenceFromVec(h.vecScore, scoreCalibration, g.entry.poolVecMedian) ?? 0,
+          );
           return vs.length > 0 ? Math.max(...vs) : 0;
         })
         .sort((a, b) => a - b);

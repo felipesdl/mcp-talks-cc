@@ -65,6 +65,43 @@ describe('confidenceFromVec', () => {
   });
 });
 
+// Margens reais são pequenas e centradas perto de zero: o pool inteiro cabe em
+// ~0.04 de cosseno (medido em 2026-08-03).
+function sampleMargins(n = MIN_SCORE_SAMPLES + 50): number[] {
+  return Array.from({ length: n }, (_, i) => -0.02 + (0.04 * i) / (n - 1));
+}
+
+describe('confidenceFromVec — corte relativo ao piso da query', () => {
+  const calAbs = buildScoreCalibration(sampleScores());
+  const calRel = buildScoreCalibration(sampleScores(), MIN_SCORE_SAMPLES, sampleMargins());
+
+  it('só habilita o corte relativo com amostra de margem', () => {
+    assert.equal(calAbs.marginPercentiles, undefined);
+    assert.ok(calRel.marginPercentiles);
+  });
+
+  it('hit sentado na mediana do pool não passa de ~0.5, mesmo com vec alto', () => {
+    const vecAlto = calRel.percentiles.p95!;
+    // margem zero = o hit está exatamente no piso da própria query
+    const c = confidenceFromVec(vecAlto, calRel, vecAlto)!;
+    assert.ok(c <= 0.55, `esperado <= 0.55 (ruído no piso), veio ${c}`);
+    // sem o termo relativo, o mesmo hit tirava nota máxima
+    assert.ok(confidenceFromVec(vecAlto, calAbs)! > 0.9);
+  });
+
+  it('hit bem acima do piso mantém confidence alta', () => {
+    const vecAlto = calRel.percentiles.p95!;
+    const c = confidenceFromVec(vecAlto, calRel, vecAlto - 0.02)!;
+    assert.ok(c > 0.9, `esperado > 0.9 (margem no topo), veio ${c}`);
+  });
+
+  it('sem poolMedian o resultado é idêntico ao comportamento antigo', () => {
+    for (const v of [0.82, 0.87, 0.9, 0.94]) {
+      assert.equal(confidenceFromVec(v, calRel), confidenceFromVec(v, calAbs));
+    }
+  });
+});
+
 describe('sanitizeScoreCalibration', () => {
   it('rejeita lixo e percentil fora de ordem', () => {
     assert.equal(sanitizeScoreCalibration(null), null);
@@ -83,5 +120,24 @@ describe('sanitizeScoreCalibration', () => {
     const poucos = sanitizeScoreCalibration({ ...cal, nSamples: 3 });
     assert.ok(poucos);
     assert.equal(poucos.ready, false, 'ready precisa ser recalculado, não confiado do arquivo');
+  });
+
+  it('marginPercentiles corrompido só desliga o corte relativo', () => {
+    const cal = buildScoreCalibration(sampleScores(), MIN_SCORE_SAMPLES, sampleMargins());
+    const quebrado = sanitizeScoreCalibration({
+      ...cal,
+      marginPercentiles: { ...cal.marginPercentiles, p90: -99 },
+    });
+    assert.ok(quebrado, 'calibração absoluta deve sobreviver');
+    assert.equal(quebrado.ready, true);
+    assert.equal(quebrado.marginPercentiles, undefined);
+  });
+
+  it('arquivo antigo sem marginPercentiles segue válido', () => {
+    const cal = buildScoreCalibration(sampleScores());
+    const ok = sanitizeScoreCalibration(JSON.parse(JSON.stringify(cal)));
+    assert.ok(ok);
+    assert.equal(ok.ready, true);
+    assert.equal(ok.marginPercentiles, undefined);
   });
 });
