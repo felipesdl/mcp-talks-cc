@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../../config.ts';
 import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
+import { prepareConversationText } from '../quality.ts';
 import { embedBatched } from '../../embeddings/localEmbedder.ts';
 import { isUnchanged, markIngested, save as saveCheckpoint } from '../checkpoint.ts';
 import {
@@ -72,7 +73,9 @@ function extractText(content: string | ContentBlock[] | undefined): {
   const tools: ContentBlock[] = [];
   for (const b of content) {
     if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
-    else if (b.type === 'thinking' && typeof b.text === 'string') parts.push(b.text);
+    // Bloco `thinking` NÃO entra: é rascunho de raciocínio, e era a maior fonte
+    // de filler navegacional no índice ("Let me check...", "I'll start with...").
+    // Decisão que sobrevive ao raciocínio reaparece no texto final da resposta.
     else if (b.type === 'tool_use' || b.type === 'tool_result') tools.push(b);
   }
   return { text: parts.join('\n\n'), toolBlocks: tools };
@@ -181,12 +184,16 @@ export async function parseSessionFile(
       text: redacted.slice(0, 10000),
     });
 
-    if (redacted.length >= config.chunk.minChars) {
+    // Gate de qualidade: limpa wrappers do harness e descarta filler/curto.
+    // Message.text acima fica com o texto cru (transcript e echo dependem dele);
+    // só o que vai virar embedding passa pelo filtro.
+    const forEmbedding = prepareConversationText(redacted);
+    if (forEmbedding) {
       embedInputs.push({
         parentKey: ev.uuid,
         parentLabel: 'Message',
         sourceKind: 'conversation',
-        text: redacted,
+        text: forEmbedding,
         timestamp: iso ?? '',
       });
     }
