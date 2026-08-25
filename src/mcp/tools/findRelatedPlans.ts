@@ -111,6 +111,12 @@ export function registerFindRelatedPlansTool(server: McpServer): void {
       description:
         'Semantic + fulltext search restricted to plan documents (~/.claude/plans/*.md). Returns top plans grouped by file with best matching snippet, score, and path. Hybrid (vec + bm25) auto-applied when query contains literal tokens.',
       inputSchema,
+      // read-only: sem isso o plan mode do Claude Code pede permissão a cada chamada
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
     },
     async (args) => {
       try {

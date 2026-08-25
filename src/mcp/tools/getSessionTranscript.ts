@@ -79,6 +79,12 @@ export function registerGetSessionTranscriptTool(server: McpServer): void {
       description:
         'Retrieve full transcript (ordered messages) of a past Claude Code session by sessionId. Use after `search_memory` returns a session you want to expand. Returns `found: false` if sessionId not indexed.',
       inputSchema,
+      // read-only: sem isso o plan mode do Claude Code pede permissão a cada chamada
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
     },
     async (args) => {
       try {

@@ -85,6 +85,12 @@ export function registerListProjectActivityTool(server: McpServer): void {
       description:
         'Aggregate stats for one project: session count, message count, tool calls, branches touched, first/last session timestamps. Pure Cypher, no embeddings. Returns `found: false` if project path not indexed.',
       inputSchema,
+      // read-only: sem isso o plan mode do Claude Code pede permissão a cada chamada
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
     },
     async (args) => {
       try {

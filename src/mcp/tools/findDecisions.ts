@@ -121,6 +121,12 @@ export function registerFindDecisionsTool(server: McpServer): void {
       description:
         'Hybrid search (vec + bm25) over task memory under `<project>/.claude/tasks/ABC-XXXX/`. Without `taskId`: only decisions.md / learnings.md across all tasks. With `taskId`: all kinds for that ticket.',
       inputSchema,
+      // read-only: sem isso o plan mode do Claude Code pede permissão a cada chamada
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
     },
     async (args) => {
       try {

@@ -85,6 +85,12 @@ export function registerFindSimilarChunksTool(server: McpServer): void {
       description:
         'Graph traversal over precomputed SIMILAR_TO edges. Given a chunkId (from a search_memory hit), returns top-k semantically similar chunks across sessions WITHOUT re-embedding the query. Faster than search_memory for "show me more like this". Use after search_memory when a hit looks promising and you want to expand the context.',
       inputSchema,
+      // read-only: sem isso o plan mode do Claude Code pede permissão a cada chamada
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      },
     },
     async (args) => {
       try {
