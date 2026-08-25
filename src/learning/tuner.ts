@@ -1,16 +1,35 @@
 import { confidenceFromVec } from '../mcp/scoreCalibration.ts';
+import { pct, suggestGate } from './confidenceGate.ts';
 import { MIN_ECHO_SAMPLES, MIN_SCORE_SAMPLES, TUNING_BOUNDS, type EchoCalibration, type Grade, type Profile, type QueryLogEntry, type ScoreCalibration, type Tuning } from './types.ts';
 
 export const MIN_SAMPLES = 30;
 const MIN_HITS_PER_BUCKET = 20;
 const MIN_PROJECT_ARG_QUERIES = 10;
 
+/**
+ * Fração mínima do janela que precisa carregar echo CALIBRADO pra existir
+ * proposta. `calibration.ready` não serve como gate: `gradeEntry` congela
+ * `echoCalibrated` no momento da gradação, e a recalibração roda DEPOIS no mesmo
+ * run (ver cli/selfTune.ts). Então no run em que o echo fecha, 100% das grades
+ * antigas seguem com `echoCalibrated: null` e `credit: 0` — arquivo diz ready,
+ * dado ainda é zero estrutural. Medido em 2026-08-25: echo ready com 31 amostras,
+ * 1 de 42 grades calibrada, 4 de 236 credits > 0, e a proposta voltou a ser
+ * penalidade (0.902 em conversation). Grade velha não se conserta sozinha: o
+ * checkpoint já passou por ela, precisa de `--regrade-from=all`.
+ * Metade é o piso porque abaixo disso o agregado é dominado pelo fallback neutro
+ * de utility 0.5 (grading/grade.ts), que empurra utility por fonte pra zero.
+ */
+const MIN_CALIBRATED_SHARE = 0.5;
+
 function clamp(v: number, b: { min: number; max: number }): number {
   return Math.min(b.max, Math.max(b.min, v));
 }
 
 export interface TuningProposal {
-  candidate: Tuning | null; // null = dados insuficientes
+  candidate: Tuning | null; // null = sem proposta possível
+  /** Por que não houve proposta. Vai pro log do self-tune — "dados
+   *  insuficientes" genérico já mandou diagnóstico pro lado errado antes. */
+  blockedBy?: string;
   rationale: string;
 }
 
@@ -60,10 +79,7 @@ export function buildTuningProposal(
         )
         .filter((v): v is number => v !== null)
         .sort((a, b) => a - b);
-      const q = (p: number): string =>
-        confs.length > 0
-          ? confs[Math.min(confs.length - 1, Math.round((p / 100) * (confs.length - 1)))]!.toFixed(2)
-          : '-';
+      const q = (p: number): string => pct(confs, p)?.toFixed(2) ?? '-';
       const topConfs = searches
         .map((g) => {
           const vs = g.entry.hits.map(
@@ -72,15 +88,17 @@ export function buildTuningProposal(
           return vs.length > 0 ? Math.max(...vs) : 0;
         })
         .sort((a, b) => a - b);
-      const qt = (p: number): string =>
-        topConfs.length > 0
-          ? topConfs[Math.min(topConfs.length - 1, Math.round((p / 100) * (topConfs.length - 1)))]!.toFixed(2)
-          : '-';
+      const qt = (p: number): string => pct(topConfs, p)?.toFixed(2) ?? '-';
+      // gate vem de suggestGate, não recalculado aqui: é o mesmo número que o
+      // primer publica (ver comentário em suggestGate)
+      const gate = suggestGate(graded, scoreCalibration);
       lines.push(
         `calibrado com ${scoreCalibration.nSamples} vec_scores | percentis vec: ${Object.entries(scoreCalibration.percentiles).map(([k, v]) => `${k}=${v.toFixed(3)}`).join(' ')}`,
         `confidence de todos os hits: p25=${q(25)} p50=${q(50)} p75=${q(75)} p90=${q(90)}`,
         `confidence do MELHOR hit por query: p25=${qt(25)} p50=${qt(50)} p75=${qt(75)} p90=${qt(90)}`,
-        `sugestão de gate pro CLAUDE.md: forte >= ${qt(75)}, fraco entre ${qt(25)} e ${qt(75)}, ignorar < ${qt(25)}`,
+        gate
+          ? `sugestão de gate pro CLAUDE.md: forte >= ${gate.strong.toFixed(2)}, fraco entre ${gate.floor.toFixed(2)} e ${gate.strong.toFixed(2)}, ignorar < ${gate.floor.toFixed(2)}`
+          : 'sugestão de gate pro CLAUDE.md: sem amostra suficiente',
         '',
       );
     } else {
@@ -93,7 +111,62 @@ export function buildTuningProposal(
 
   if (n < MIN_SAMPLES) {
     lines.push(`## proposta`, '', `dados insuficientes (${n}/${MIN_SAMPLES} grades). Nenhum candidate gerado; search_memory segue com defaults/tuning atual.`);
-    return { candidate: null, rationale: lines.join('\n') };
+    return {
+      candidate: null,
+      blockedBy: `grades insuficientes (${n}/${MIN_SAMPLES})`,
+      rationale: lines.join('\n'),
+    };
+  }
+
+  // Gate de echo: sem calibração pronta, `applyCalibration` devolve null e todo
+  // credit por hit cai no `?? 0` (grading/grade.ts). Utility observada vira 0 por
+  // construção, não por medição, e `1 + 0.3 * (0 - meanUtility)` transforma isso
+  // em PENALIDADE nas fontes mais usadas. Medido em 2026-08-24: 198 hitCredits
+  // todos 0, propondo 0.936 em conversation, px-painel e px-mobile-motorista, que
+  // são 78% do tráfego real. Todo campo proposto abaixo (perSourceKind,
+  // perProject, projectBoost) deriva de credit, então nesse estado não existe
+  // proposta honesta a fazer — só `k`, que é passthrough do tuning atual.
+  if (!calibration?.ready) {
+    const have = calibration ? `${calibration.nSamples}/${MIN_ECHO_SAMPLES}` : 'sem amostra';
+    lines.push(
+      '## proposta',
+      '',
+      `sem proposta: echo não calibrado (${have} amostras).`,
+      'Nesse estado todo credit por hit é 0 por construção, e boost derivado disso seria',
+      'penalidade fabricada justamente nas fontes que você mais usa. search_memory segue',
+      'com defaults/tuning atual até a calibração fechar.',
+    );
+    return {
+      candidate: null,
+      blockedBy: `echo não calibrado (${have})`,
+      rationale: lines.join('\n'),
+    };
+  }
+
+  // Segundo gate: calibração pronta não significa grades calibradas (ver
+  // MIN_CALIBRATED_SHARE). Sem isso o run em que o echo fecha propõe penalidade.
+  const nCalibrated = searches.filter((g) => g.grade.signals.echoCalibrated !== null).length;
+  const calibratedShare = n > 0 ? nCalibrated / n : 0;
+  if (calibratedShare < MIN_CALIBRATED_SHARE) {
+    lines.push(
+      '## proposta',
+      '',
+      `sem proposta: echo calibrado, mas só ${nCalibrated}/${n} grades carregam echo calibrado ` +
+        `(${(calibratedShare * 100).toFixed(0)}%, mínimo ${MIN_CALIBRATED_SHARE * 100}%).`,
+      'Grade é gravada com o echo da calibração VIGENTE naquele momento, e a recalibração roda',
+      'depois: as grades anteriores ao fechamento do echo ficaram com echoCalibrated=null e',
+      'credit=0. O agregado ainda é zero estrutural, então boost daqui sairia penalidade.',
+      '',
+      'Conserta re-gradando o histórico com a calibração de agora:',
+      '```',
+      'npm run self-tune -- --regrade-from=all',
+      '```',
+    );
+    return {
+      candidate: null,
+      blockedBy: `grades sem echo calibrado (${nCalibrated}/${n}); rode: npm run self-tune -- --regrade-from=all`,
+      rationale: lines.join('\n'),
+    };
   }
 
   const meanUtility = profile.lastEval.meanUtility;

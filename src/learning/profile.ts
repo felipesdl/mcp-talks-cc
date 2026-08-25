@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import { LITERAL_TOKEN_RE, TERM_TOKEN_RE } from '../mcp/tools/searchMemory.ts';
-import type { Grade, Profile, QueryLogEntry } from './types.ts';
+import { suggestGate } from './confidenceGate.ts';
+import type { Grade, Profile, QueryLogEntry, ScoreCalibration } from './types.ts';
 
 const STOPWORDS = new Set([
   // pt
@@ -81,6 +82,8 @@ function clusterProjects(entries: QueryLogEntry[]): string[][] {
 export function buildProfile(
   graded: Array<{ entry: QueryLogEntry; grade: Grade }>,
   windowDays: number,
+  // opcional: sem calibração pronta o gate sai null, e o primer publica o fallback
+  scoreCalibration: ScoreCalibration | null = null,
 ): Profile {
   const searchGraded = graded.filter((g) => g.entry.tool === 'search_memory');
 
@@ -191,5 +194,6 @@ export function buildProfile(
       meanUtility,
       healthy: gradedCount === 0 || meanUtility > 0.2,
     },
+    confidenceGate: suggestGate(graded, scoreCalibration),
   };
 }

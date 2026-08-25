@@ -17,6 +17,7 @@ function profile(over: Partial<Profile> = {}): Profile {
     queryShapes: { zeroHitTerms: [], medianK: 8, literalVsNL: { lit: 1, nl: 1 } },
     recentHighValue: [],
     lastEval: { ranAt: '2026-06-11T00:00:00.000Z', queriesGraded: 10, meanUtility: 0.6, healthy: true },
+    confidenceGate: { strong: 0.91, floor: 0.59, nQueries: 39 },
     ...over,
   };
 }
@@ -51,5 +52,36 @@ describe('buildPrimer', () => {
     const raw = buildPrimer(profile(), { proposedAt: new Date().toISOString(), nGrades: 30 });
     const ctx = JSON.parse(raw!).hookSpecificOutput.additionalContext as string;
     assert.ok(ctx.includes('proposta de retrieval nova'));
+  });
+
+  // O gate é PUSH de propósito: a regra equivalente no CLAUDE.md mandava ler o
+  // rationale antes de citar e ficou inerte por semanas, porque leitura
+  // discricionária depende de alguém lembrar.
+  it('gate calibrado -> publica os cortes vigentes e o tamanho da amostra', () => {
+    const ctx = JSON.parse(buildPrimer(profile())!).hookSpecificOutput.additionalContext as string;
+    assert.ok(ctx.includes('forte >= 0.91'), ctx);
+    assert.ok(ctx.includes('ignorar < 0.59'), ctx);
+    assert.ok(ctx.includes('39 queries'), ctx);
+  });
+
+  it('gate ausente -> avisa que confidence vem null e nada é forte', () => {
+    const ctx = JSON.parse(buildPrimer(profile({ confidenceGate: null }))!).hookSpecificOutput
+      .additionalContext as string;
+    assert.ok(ctx.includes('confidence=null'), ctx);
+    assert.ok(ctx.includes('NENHUM hit conta como forte'), ctx);
+    assert.ok(ctx.includes('forte >= 0.90'), ctx); // fallback
+  });
+
+  it('profile antigo sem o campo cai no aviso de fallback, não quebra', () => {
+    const p = profile();
+    delete p.confidenceGate;
+    const ctx = JSON.parse(buildPrimer(p)!).hookSpecificOutput.additionalContext as string;
+    assert.ok(ctx.includes('calibração de score incompleta'), ctx);
+  });
+
+  it('cabe no teto de contexto mesmo com gate + nag juntos', () => {
+    const raw = buildPrimer(profile(), { proposedAt: new Date().toISOString(), nGrades: 39 });
+    const ctx = JSON.parse(raw!).hookSpecificOutput.additionalContext as string;
+    assert.ok(!ctx.endsWith('…'), 'primer truncou');
   });
 });

@@ -16,6 +16,7 @@ export const learningPaths = {
   primer: join(dir, 'primer.json'),
   tuning: join(dir, 'tuning.json'),
   tuningCandidate: join(dir, 'tuning.candidate.json'),
+  tuningRejected: join(dir, 'tuning.rejected.json'),
   tuningRationale: join(dir, 'tuning-rationale.md'),
   tuningSnapshot: join(dir, 'tuning.snapshot.json'),
   selfTuneLock: join(dir, 'self-tune.lock'),

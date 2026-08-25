@@ -79,8 +79,15 @@ npm run db:stats                          # counts por label
 npm run mcp:start                         # roda o MCP server (stdio)
 npm run mcp:inspect                       # MCP Inspector UI
 npm run self-tune -- --regrade-from=all   # re-grada o query-log inteiro (usar quando o grader muda)
+npm run self-tune:accept                  # promove tuning.candidate.json -> tuning.json
+npm run self-tune:reject                  # recusa o candidate e para de cobrar accept
 npm run backfill:message-text             # repara Message.text sem re-embedar
 ```
+
+`self-tune:reject` é a contrapartida do accept. O self-tune regenera o candidate a cada
+sessão, então sem registrar a recusa o primer cobra a mesma proposta pra sempre e aplicar
+vira a única saída. A recusa é comparada por CONTEÚDO (`tuningEquals`, ignora `updatedAt`):
+proposta diferente volta a cobrar accept, e um accept posterior limpa o registro.
 
 `backfill:message-text` repara `Message.text` quando ele fica vazio no grafo (foi o caso enquanto `writeMessages()` não gravava o campo: `get_session_transcript` devolvia transcript vazio e o echo do self-tune era impossível de calcular). Re-parseia os JSONL em disco e só faz `SET m.text`, sem tocar em Chunk nem no checkpoint. Sessão cujo JSONL o Claude Code já podou não tem como voltar.
 

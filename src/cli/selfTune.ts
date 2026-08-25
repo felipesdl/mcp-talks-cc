@@ -15,7 +15,7 @@ import { buildPrimer, type PendingCandidateInfo } from '../learning/primer.ts';
 import { buildTuningProposal } from '../learning/tuner.ts';
 import { getTuning, sanitizeTuning, tuningEquals } from '../mcp/tuning.ts';
 import { buildScoreCalibration } from '../mcp/scoreCalibration.ts';
-import { gradeSchema, MIN_ECHO_SAMPLES, MIN_SCORE_SAMPLES, type EchoCalibration, type Grade, type QueryLogEntry, type Tuning } from '../learning/types.ts';
+import { gradeSchema, MIN_ECHO_SAMPLES, MIN_SCORE_SAMPLES, type EchoCalibration, type Grade, type QueryLogEntry, type Tuning, type TuningRejection } from '../learning/types.ts';
 
 const SETTLE_MS = 45 * 60 * 1000; // espera sinais de follow-up + ingest do transcript
 const LOCK_STALE_MS = 30 * 60 * 1000;
@@ -170,11 +170,11 @@ async function main(): Promise<void> {
       .map((g) => ({ grade: g, entry: entryByTs.get(g.queryTs) }))
       .filter((x): x is { grade: Grade; entry: QueryLogEntry } => x.entry !== undefined);
 
-    const profile = buildProfile(graded, WINDOW_DAYS);
+    const profile = buildProfile(graded, WINDOW_DAYS, scoreCalibration);
     await writeAtomic(learningPaths.profile, JSON.stringify(profile, null, 2));
 
     // candidate antes do primer: o primer avisa sobre pendência de tuning
-    const { candidate, rationale } = buildTuningProposal(
+    const { candidate, rationale, blockedBy } = buildTuningProposal(
       graded,
       profile,
       getTuning(),
@@ -182,6 +182,7 @@ async function main(): Promise<void> {
       scoreCalibration,
     );
     await writeAtomic(learningPaths.tuningRationale, rationale);
+    const rejection = await readJson<TuningRejection>(learningPaths.tuningRejected);
     let pendingCandidate: PendingCandidateInfo | null = null;
     if (candidate && tuningEquals(sanitizeTuning(candidate), getTuning())) {
       // Proposta idêntica ao tuning já aplicado não é pendência. Sem esse ramo,
@@ -190,6 +191,17 @@ async function main(): Promise<void> {
       await rm(learningPaths.tuningCandidate, { force: true });
       console.log(
         `[self-tune] candidate == tuning aplicado (${graded.length} grades), nada a promover. Detalhe: ${learningPaths.tuningRationale}`,
+      );
+    } else if (
+      candidate &&
+      rejection &&
+      tuningEquals(sanitizeTuning(candidate), sanitizeTuning(rejection.tuning))
+    ) {
+      // Mesma proposta já recusada: não vira pendência de novo. Sem esse ramo o
+      // reject não gruda, porque o candidate é regenerado a cada run.
+      await rm(learningPaths.tuningCandidate, { force: true });
+      console.log(
+        `[self-tune] candidate == proposta recusada em ${rejection.rejectedAt} (${graded.length} grades), sem cobrança. Detalhe: ${learningPaths.tuningRationale}`,
       );
     } else if (candidate) {
       // mesmo conteúdo do run anterior -> preserva updatedAt p/ o primer mostrar a idade real da pendência
@@ -205,7 +217,9 @@ async function main(): Promise<void> {
       );
     } else {
       await rm(learningPaths.tuningCandidate, { force: true });
-      console.log(`[self-tune] dados insuficientes p/ candidate (${graded.length} grades). Detalhe: ${learningPaths.tuningRationale}`);
+      console.log(
+        `[self-tune] sem candidate: ${blockedBy ?? 'motivo não informado'} (${graded.length} grades). Detalhe: ${learningPaths.tuningRationale}`,
+      );
     }
 
     const primer = buildPrimer(profile, pendingCandidate);

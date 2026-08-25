@@ -108,7 +108,16 @@ export const gradeSchema = z.object({
 
 // ── echo-calibration.json ────────────────────────────────────────────────────
 
-export const MIN_ECHO_SAMPLES = 50;
+/**
+ * Baixado de 50 pra 30 em 2026-08-24. O gate de 50 travava o loop inteiro: sem
+ * echo calibrado todo credit por hit é 0 (ver grading/grade.ts), então utility,
+ * profile e tuner ficam cegos. O rendimento medido é ~0.68 amostra por query
+ * gradada (34 grades -> 23 amostras; 11 sem echo computável), e o uso real é de
+ * ~2 buscas/dia, então 50 significava mais de um mês de espera pra destravar.
+ * Os percentis já estavam estáveis nessa faixa (p50=0.782 com 22 e com 23
+ * amostras), que é o que floor=p40/ceil=p90 consome.
+ */
+export const MIN_ECHO_SAMPLES = 30;
 
 export interface EchoCalibration {
   v: 1;
@@ -144,6 +153,13 @@ export interface ScoreCalibration {
 
 // ── profile.json ─────────────────────────────────────────────────────────────
 
+/** Cortes de citação derivados da distribuição real. Ver learning/confidenceGate.ts. */
+export interface ConfidenceGate {
+  strong: number; // p75 da confidence do melhor hit por query
+  floor: number; // p25
+  nQueries: number; // tamanho da amostra (1 ponto por query gradada)
+}
+
 export interface Profile {
   v: 1;
   generatedAt: string;
@@ -160,6 +176,13 @@ export interface Profile {
   };
   recentHighValue: Array<{ gist: string; when: string; ref: string }>;
   lastEval: { ranAt: string; queriesGraded: number; meanUtility: number; healthy: boolean };
+  /**
+   * Gate de citação vigente (ver learning/confidenceGate.ts). Vive no profile pra
+   * que accept/reject possam regravar o primer sem recalcular percentil, e
+   * opcional porque profile.json escrito antes deste campo tem que seguir válido.
+   * null = calibração de score não pronta.
+   */
+  confidenceGate?: ConfidenceGate | null;
 }
 
 // ── tuning.json / tuning.candidate.json ──────────────────────────────────────
@@ -194,3 +217,17 @@ export const tuningSchema = z.object({
   ),
   k: z.number().int().min(TUNING_BOUNDS.k.min).max(TUNING_BOUNDS.k.max),
 });
+
+// ── tuning.rejected.json ─────────────────────────────────────────────────────
+// Contrapartida do accept. O self-tune regenera o candidate a cada sessão, então
+// sem registrar a recusa o primer cobra a mesma proposta pra sempre e aplicar é a
+// única saída. Guarda UMA rejeição de cada vez, comparada por conteúdo
+// (tuningEquals, que ignora updatedAt): proposta diferente volta a cobrar accept,
+// e um accept posterior limpa o registro.
+
+export interface TuningRejection {
+  v: 1;
+  rejectedAt: string;
+  nGrades: number | null; // quantas grades sustentavam a proposta recusada
+  tuning: Tuning;
+}

@@ -2,8 +2,13 @@
 
 Estado atual (v2): query log → grading auto-supervisionado (echo/reformulação/drill-in) →
 profile → primer (push no SessionStart) → tuner coadjuvante (propõe boosts bounded, user
-aprova com `npm run self-tune:accept`). `project` é soft boost no ranking, score reportado
-fica raw.
+aprova com `npm run self-tune:accept`, ou recusa com `npm run self-tune:reject`). `project` é
+soft boost no ranking, score reportado fica raw.
+
+O tuner só propõe com a calibração de echo pronta. Sem ela todo credit por hit é 0 por
+construção (`applyCalibration` devolve null, `grade.ts` cai no `?? 0`), e `1 + 0.3 * (0 -
+meanUtility)` transformava zero estrutural em penalidade nas fontes mais usadas — medido em
+2026-08-24: 198 hitCredits todos 0 propondo 0.936 em `conversation`/`px-painel`.
 
 As duas evoluções abaixo foram decididas mas NÃO construídas: ambas dependem do loop de
 medição rodando primeiro.

@@ -33,6 +33,11 @@ console.log(JSON.stringify(parsed.data, null, 2));
 // sessão continua cobrando accept, e o self-tune trata o arquivo como proposta viva.
 await rm(learningPaths.tuningCandidate, { force: true });
 
+// Rejeição antiga morre no accept: ela silencia UMA proposta por conteúdo, e
+// depois de mudar o tuning aplicado aquele conteúdo já significa outra coisa.
+// Mantê-la só criaria um mudo permanente difícil de explicar.
+await rm(learningPaths.tuningRejected, { force: true });
+
 // primer.json foi escrito pelo run que propôs, com o aviso "TUNING PENDENTE"
 // embutido. Regrava sem o aviso, senão a próxima sessão cobra um accept já feito.
 const profile = await readJson<Profile>(learningPaths.profile);
