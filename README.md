@@ -9,6 +9,16 @@ MCP local que indexa toda a memória do Claude Code (conversas + plans + todos +
 - **Embeddings local** via `@huggingface/transformers` — modelo `Xenova/bge-m3` (1024-dim, multilíngue pt/en, quantizado q8 ~150MB)
 - **MCP SDK** `@modelcontextprotocol/sdk` stdio transport
 
+## Pré-requisitos
+
+- **Node >= 22.13** (usa `--experimental-strip-types`, sem build step)
+- **Docker** + `docker compose` (Neo4j sobe em container)
+- **Claude Code CLI** no PATH (`claude`) — o `install.sh` usa `claude mcp add`
+- ~2GB de disco: imagem Neo4j + store do grafo + modelo bge-m3 q8 (~150MB em `~/.cache/huggingface/`)
+
+Testado em macOS. Os scripts evitam dependência de `flock` (que não existe no macOS) e usam
+lockdir com pidfile, então devem rodar em Linux também.
+
 ## Setup
 
 Atalho: `./scripts/install.sh` roda os passos 1-6 abaixo + registra o MCP + instala o hook de auto-ingest (idempotente). Veja [Instalar / reinstalar do zero](#instalar--reinstalar-do-zero). Os passos manuais abaixo ficam como referência/fallback.
@@ -114,7 +124,7 @@ Resources:
 Para usar o MCP dentro do Claude Code, registre o server. Forma mais segura via CLI. O `-s user` registra em escopo de usuário (global, vale em todos os projetos); sem ele o default é escopo `local`, que só anexa o server no diretório de onde o comando rodou:
 
 ```bash
-claude mcp add memory -s user \
+claude mcp add mcp-talks-cc -s user \
   -- node \
   --env-file=/ABSOLUTE/PATH/TO/mcp-talks-cc/.env \
   --experimental-strip-types \
@@ -122,6 +132,20 @@ claude mcp add memory -s user \
 ```
 
 Ou cole o snippet de `claude-mcp-config.snippet.json` em `~/.claude.json` (root level — não em `settings.json` se este tiver hooks). Depois `/mcp` no Claude Code lista o server `mcp-talks-cc` como conectado.
+
+## Config no CLAUDE.md (obrigatório)
+
+Registrar o server **não basta**. O que faz o Claude realmente usar a memória é um bloco de
+instruções no seu `~/.claude/CLAUDE.md`: quando buscar, como ler `confidence` (e por que
+`score` não serve de corte), qual o limite de citações, quais anti-padrões evitar.
+
+Sem esse bloco o sintoma é silencioso: o `/mcp` mostra o server conectado, mas o Claude ou
+ignora as tools, ou cita hit irrelevante porque olhou `score` (o bge-m3 devolve cosseno
+entre 0.86 e 0.91 pra praticamente qualquer par de textos — cortar em `score` aprova tudo).
+
+Copie de [`docs/CLAUDE.md.snippet.md`](docs/CLAUDE.md.snippet.md). O snippet é neutro de
+projeto: o fluxo de análise de task do Jira serve pra qualquer prefixo (`EDC-1234`,
+`US-77`, `AQ-1831`), já que o BM25 trata `[A-Z]{2,}-\d+` como token literal.
 
 ## Instalar / reinstalar do zero
 
@@ -138,7 +162,7 @@ Idempotente — seguro re-rodar. Faz, em ordem:
 3. `npm run infra:up` (Neo4j via docker, espera healthy)
 4. `npm run db:init` (constraints + vector index)
 5. `npm run ingest -- --source=all` (1º ingest; incremental depois)
-6. registra o MCP `memory` no Claude Code — só se ainda não estiver (`claude mcp get memory`)
+6. registra o MCP `mcp-talks-cc` no Claude Code — só se ainda não estiver (`claude mcp get mcp-talks-cc`)
 7. instala o hook `SessionStart` de auto-ingest (`scripts/install-hook.mjs`) — merge sem clobber, backup em `~/.claude/settings.json.bak`
 8. `chmod +x` no wrapper
 

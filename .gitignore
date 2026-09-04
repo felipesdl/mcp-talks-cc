@@ -9,3 +9,4 @@ neo4j/import/
 dist/
 *.log
 .DS_Store
+.claude/settings.local.json

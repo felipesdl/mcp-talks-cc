@@ -54,4 +54,8 @@ echo "Setup completo."
 echo "  Auto-ingest: dispara a cada SessionStart, log em ~/.cache/mcp-talks-cc/ingest.log"
 echo "  Verificar grafo:  npm run db:stats"
 echo "  Verificar MCP:    /mcp no Claude Code (server 'mcp-talks-cc' conectado)"
+echo
+echo "  FALTA 1 PASSO MANUAL: cole o bloco de docs/CLAUDE.md.snippet.md"
+echo "  no seu ~/.claude/CLAUDE.md. Sem ele o server conecta mas o Claude"
+echo "  nao sabe quando buscar nem como ler confidence."
 echo "================================================================"
