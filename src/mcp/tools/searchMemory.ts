@@ -9,12 +9,14 @@ import {
   RRF_K,
   RECENCY_FLOOR,
   RECENCY_HALFLIFE_DAYS,
+  VALUE_DEMOTE_THRESHOLD,
   RECALL_POOL,
   RECALL_POOL_MAX,
   MMR_POOL_MULT,
   MMR_POOL_MAX,
 } from '../tuning.ts';
 import { confidenceFromVec, getScoreCalibration } from '../scoreCalibration.ts';
+import { lexicalHints } from '../../ingest/quality.ts';
 import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
 
@@ -72,6 +74,8 @@ export interface SearchHit {
   confidence: number | null;
   vec_score: number;
   bm25_score: number | null;
+  /** P(entrega) do classificador de valor; null se o chunk ainda não foi classificado. */
+  value_score: number | null;
   source: string;
   sessionId: string | null;
   project: string | null;
@@ -177,6 +181,9 @@ interface CandidateMeta {
   sessionId: string | null;
   project: string | null;
   timestamp: string | null;
+  /** P(entrega) do classificador de valor; null = chunk ainda sem classificação. */
+  valueScore: number | null;
+  role: string | null;
 }
 
 /** Candidato do estágio A (pool largo): sem embedding, sem texto. */
@@ -234,6 +241,35 @@ function normalizeRelevance(values: number[]): number[] {
   const max = Math.max(...finite);
   const span = max - min;
   return values.map((v) => (span > 0 ? (v - min) / span : 1));
+}
+
+/**
+ * Demoção assimétrica de narração.
+ *
+ * Promover conteúdo bom não precisa de cuidado; REBAIXAR precisa, porque o erro
+ * some com informação. Por isso o multiplicador só sai de 1 quando as três
+ * condições valem, e qualquer falha devolve neutro em vez de punir:
+ *
+ *  1. `valueScore` abaixo do limiar (medido: em 0,30 acerta 87,5%);
+ *  2. papel diferente de `user` — pedido e restrição são curtos e imperativos,
+ *     sintaticamente iguais a anúncio, e são 18,5 mil chunks. Tratá-los pelo
+ *     mesmo modelo rebaixaria mais de um terço do acervo por acidente;
+ *  3. veto lexical: bloco de código, bullet, `porque`/`because` ou seta indicam
+ *     entrega, e vencem o modelo. Defesa contra o overlap de 150 chars do
+ *     chunker, que faz um pedaço começar com cauda de anúncio e mesmo assim
+ *     entregar conteúdo.
+ *
+ * Aplicado SÓ no MMR, nunca no corte do estágio A: lá o texto ainda não foi
+ * buscado, então o veto não teria como rodar e um chunk bom poderia cair fora
+ * do pool de finalistas sem chance de defesa.
+ */
+function valueMult(c: Candidate, demote: number): number {
+  if (demote >= 1) return 1;
+  const p = c.meta.valueScore;
+  if (p === null || p >= VALUE_DEMOTE_THRESHOLD) return 1;
+  if (c.meta.role === 'user') return 1;
+  if (lexicalHints(c.snippet).payload) return 1;
+  return demote;
 }
 
 function mmrSelect(
@@ -328,7 +364,9 @@ async function searchMemory(args: {
                 node.sourceKind AS source,
                 node.sessionId AS sessionId,
                 node.projectPath AS project,
-                node.timestamp AS timestamp
+                node.timestamp AS timestamp,
+                node.valueScore AS valueScore,
+                node.role AS role
          ORDER BY score DESC`,
         {
           vec: qvec,
@@ -356,7 +394,9 @@ async function searchMemory(args: {
                     node.sourceKind AS source,
                     node.sessionId AS sessionId,
                     node.projectPath AS project,
-                    node.timestamp AS timestamp
+                    node.timestamp AS timestamp,
+                    node.valueScore AS valueScore,
+                    node.role AS role
              ORDER BY score DESC`,
             {
               query: ftQuery,
@@ -380,6 +420,8 @@ async function searchMemory(args: {
                 sessionId: r.get('sessionId'),
                 project: r.get('project'),
                 timestamp: r.get('timestamp'),
+                valueScore: r.get('valueScore') === null ? null : Number(r.get('valueScore')),
+                role: r.get('role'),
               },
             });
           });
@@ -414,6 +456,8 @@ async function searchMemory(args: {
             sessionId: rec.get('sessionId'),
             project: rec.get('project'),
             timestamp: rec.get('timestamp'),
+            valueScore: rec.get('valueScore') === null ? null : Number(rec.get('valueScore')),
+            role: rec.get('role'),
           },
         });
       });
@@ -507,7 +551,7 @@ async function searchMemory(args: {
       lambda,
       k,
       (c) => relMap.get(c.id) ?? 0,
-      (c) => boostOf(c.meta),
+      (c) => boostOf(c.meta) * valueMult(c, tuning.valueDemote),
     );
 
     // (5) Context expansion + parent lookup (só dos k finais)
@@ -545,6 +589,7 @@ async function searchMemory(args: {
         confidence: confidenceFromVec(c.vec_score, calibration, poolVecMedian),
         vec_score: c.vec_score,
         bm25_score: c.bm25_score,
+        value_score: c.meta.valueScore,
         source: c.meta.source,
         sessionId: c.meta.sessionId,
         project: c.meta.project,

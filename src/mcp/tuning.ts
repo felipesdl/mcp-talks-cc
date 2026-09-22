@@ -21,6 +21,22 @@ export const LAMBDA_DEFAULT = 0.7;
  */
 export const RRF_K = 60;
 
+/**
+ * Abaixo deste P(entrega) o chunk é candidato a ser rebaixado na busca.
+ *
+ * Escolhido a partir da população, não de chute. Medido no conjunto retido em
+ * 22/09/2026 (5.091 exemplos de sessões que o treino nunca viu):
+ *
+ *   limiar 0,20 -> rebaixa  7% dos chunks, acerta 92,4%
+ *   limiar 0,30 -> rebaixa 19% dos chunks, acerta 87,5%
+ *   limiar 0,50 -> rebaixa 58% dos chunks, acerta 81,4%
+ *
+ * 0,30 é o ponto onde a fatia deixa de ser simbólica sem que o erro passe de um
+ * oitavo, e o veto lexical abaixo cobre parte do que sobra. Mudar este número
+ * NÃO exige reclassificar: o que está gravado no Chunk é a probabilidade.
+ */
+export const VALUE_DEMOTE_THRESHOLD = 0.3;
+
 // Retrieval em dois estágios. O bge-m3 devolve cosseno entre 0.87 e 0.91 pra
 // praticamente qualquer par, então o ranking por similaridade pura é quase
 // arbitrário nessa faixa: medido em 2026-08-03, 2000 candidatos couberam em
@@ -50,6 +66,10 @@ export const DEFAULT_TUNING: Tuning = {
   projectBoost: 1.15,
   perSourceKind: {},
   perProject: {},
+  // Neutro por default: a demoção só liga quando alguém escrever o valor em
+  // tuning.json. Isso é o kill switch — voltar pra 1 desliga tudo em <=60s,
+  // sem deploy e sem reclassificar, porque os rótulos ficam no grafo.
+  valueDemote: 1,
   k: 8,
 };
 
@@ -90,6 +110,10 @@ export function sanitizeTuning(raw: unknown): Tuning {
         : DEFAULT_TUNING.projectBoost,
     perSourceKind: clampRecord(r.perSourceKind, TUNING_BOUNDS.perSourceKind),
     perProject: clampRecord(r.perProject, TUNING_BOUNDS.perProject),
+    valueDemote:
+      typeof r.valueDemote === 'number' && Number.isFinite(r.valueDemote)
+        ? clamp(r.valueDemote, TUNING_BOUNDS.valueDemote.min, TUNING_BOUNDS.valueDemote.max)
+        : DEFAULT_TUNING.valueDemote,
     k:
       typeof r.k === 'number' && Number.isInteger(r.k)
         ? clamp(r.k, TUNING_BOUNDS.k.min, TUNING_BOUNDS.k.max)
@@ -109,6 +133,7 @@ export function tuningEquals(a: Tuning, b: Tuning): boolean {
     return JSON.stringify({
       v: t.v,
       projectBoost: t.projectBoost,
+      valueDemote: t.valueDemote,
       k: t.k,
       perSourceKind: sorted(t.perSourceKind),
       perProject: sorted(t.perProject),

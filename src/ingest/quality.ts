@@ -87,6 +87,28 @@ export function lowValueReason(stripped: string): LowValueReason | null {
   return null;
 }
 
+/**
+ * Sinais lexicais do texto, expostos para o classificador de valor reaproveitar
+ * o mesmo critério em vez de reescrevê-lo.
+ *
+ * `payload` é o veto da demoção na busca: chunk com bloco de código, bullet,
+ * `porque`/`because` ou seta entrega alguma coisa, e não é rebaixado por mais
+ * que o modelo diga o contrário. É a defesa barata contra o overlap de 150
+ * chars do chunker, que faz um pedaço COMEÇAR com cauda de anúncio e mesmo
+ * assim entregar conteúdo.
+ */
+export function lexicalHints(text: string): {
+  announcement: boolean;
+  payload: boolean;
+  contentSignal: boolean;
+} {
+  return {
+    announcement: ANNOUNCEMENT_RE.test(text),
+    payload: PAYLOAD_RE.test(text),
+    contentSignal: CONTENT_SIGNAL_RE.test(text),
+  };
+}
+
 export function isLowValueText(stripped: string): boolean {
   return lowValueReason(stripped) !== null;
 }

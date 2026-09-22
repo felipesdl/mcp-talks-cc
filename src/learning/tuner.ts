@@ -253,6 +253,12 @@ export function buildTuningProposal(
     projectBoost,
     perSourceKind,
     perProject,
+    // Passthrough deliberado: o loop NÃO aprende a demoção por valor nesta fase.
+    // Sem echo calibrado o credit é zero por construção, e a proposta viraria
+    // penalidade fabricada justamente nas fontes mais usadas (medido em
+    // 2026-08-24: 198 credits zerados propondo 0.936 em `conversation`). Numa
+    // dimensão com piso 0.5 isso desligaria metade do acervo por engano.
+    valueDemote: current.valueDemote,
     k: current.k,
   };
 

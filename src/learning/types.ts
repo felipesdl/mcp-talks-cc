@@ -193,6 +193,12 @@ export const TUNING_BOUNDS = {
   projectBoost: { min: 1.0, max: 1.5 },
   perSourceKind: { min: 0.85, max: 1.25 },
   perProject: { min: 0.9, max: 1.2 },
+  /**
+   * Piso 0.5, e não o 0.85 de perSourceKind, de propósito: a relevância
+   * normalizada é quase plana neste corpus, então uma demoção de 0.85 não move
+   * ranking nenhum. É a única folga que o mecanismo de tuning precisou.
+   */
+  valueDemote: { min: 0.5, max: 1.0 },
   k: { min: 1, max: 50 },
 } as const;
 
@@ -202,6 +208,11 @@ export interface Tuning {
   projectBoost: number; // soft boost do arg `project` no ranking
   perSourceKind: Record<string, number>;
   perProject: Record<string, number>; // afinidade aprendida, aplica sem arg project
+  /**
+   * Multiplicador aplicado a chunk classificado como narração (ver
+   * src/classify/). 1.0 desliga a demoção sem precisar reclassificar nada.
+   */
+  valueDemote: number;
   k: number;
 }
 
@@ -215,6 +226,11 @@ export const tuningSchema = z.object({
   perProject: z.record(
     z.number().min(TUNING_BOUNDS.perProject.min).max(TUNING_BOUNDS.perProject.max),
   ),
+  valueDemote: z
+    .number()
+    .min(TUNING_BOUNDS.valueDemote.min)
+    .max(TUNING_BOUNDS.valueDemote.max)
+    .default(1),
   k: z.number().int().min(TUNING_BOUNDS.k.min).max(TUNING_BOUNDS.k.max),
 });
 
