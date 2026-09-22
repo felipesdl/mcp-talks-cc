@@ -70,6 +70,7 @@ export const DEFAULT_TUNING: Tuning = {
   // tuning.json. Isso é o kill switch — voltar pra 1 desliga tudo em <=60s,
   // sem deploy e sem reclassificar, porque os rótulos ficam no grafo.
   valueDemote: 1,
+  entityBoost: 1,
   k: 8,
 };
 
@@ -114,6 +115,10 @@ export function sanitizeTuning(raw: unknown): Tuning {
       typeof r.valueDemote === 'number' && Number.isFinite(r.valueDemote)
         ? clamp(r.valueDemote, TUNING_BOUNDS.valueDemote.min, TUNING_BOUNDS.valueDemote.max)
         : DEFAULT_TUNING.valueDemote,
+    entityBoost:
+      typeof r.entityBoost === 'number' && Number.isFinite(r.entityBoost)
+        ? clamp(r.entityBoost, TUNING_BOUNDS.entityBoost.min, TUNING_BOUNDS.entityBoost.max)
+        : DEFAULT_TUNING.entityBoost,
     k:
       typeof r.k === 'number' && Number.isInteger(r.k)
         ? clamp(r.k, TUNING_BOUNDS.k.min, TUNING_BOUNDS.k.max)
@@ -134,6 +139,7 @@ export function tuningEquals(a: Tuning, b: Tuning): boolean {
       v: t.v,
       projectBoost: t.projectBoost,
       valueDemote: t.valueDemote,
+      entityBoost: t.entityBoost,
       k: t.k,
       perSourceKind: sorted(t.perSourceKind),
       perProject: sorted(t.perProject),

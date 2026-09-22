@@ -144,6 +144,15 @@ if [ "${new_chunks:-0}" -gt 0 ]; then
   fi
 fi
 
+# ── Entidades: task e arquivo da sessão que acabou de entrar ────────────────
+# Idempotente (MERGE + SET de valor absoluto) e custa ~3s sobre o acervo
+# inteiro, então roda sem throttle. Fail-open.
+if [ "${new_chunks:-0}" -gt 0 ]; then
+  log "build:entities start"
+  npm run build:entities -- --apply >> "$LOG" 2>&1
+  log "build:entities done (exit $?)"
+fi
+
 # ── SIMILAR_TO: edges do find_similar_chunks só cobrem chunk já processado ───
 if [ "${new_chunks:-0}" -gt 0 ]; then
   similar_age=$(( $(now_epoch) - $(mtime_of "$SIMILAR_STAMP") ))

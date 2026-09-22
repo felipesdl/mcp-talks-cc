@@ -199,6 +199,8 @@ export const TUNING_BOUNDS = {
    * ranking nenhum. É a única folga que o mecanismo de tuning precisou.
    */
   valueDemote: { min: 0.5, max: 1.0 },
+  /** Teto baixo de propósito: ver o risco de auto-reforço em searchMemory. */
+  entityBoost: { min: 1.0, max: 1.35 },
   k: { min: 1, max: 50 },
 } as const;
 
@@ -213,6 +215,11 @@ export interface Tuning {
    * src/classify/). 1.0 desliga a demoção sem precisar reclassificar nada.
    */
   valueDemote: number;
+  /**
+   * Boost para chunk de sessão que compartilha task ou arquivo com quem está
+   * chamando. Custo zero em tokens: mexe só no ranking.
+   */
+  entityBoost: number;
   k: number;
 }
 
@@ -230,6 +237,11 @@ export const tuningSchema = z.object({
     .number()
     .min(TUNING_BOUNDS.valueDemote.min)
     .max(TUNING_BOUNDS.valueDemote.max)
+    .default(1),
+  entityBoost: z
+    .number()
+    .min(TUNING_BOUNDS.entityBoost.min)
+    .max(TUNING_BOUNDS.entityBoost.max)
     .default(1),
   k: z.number().int().min(TUNING_BOUNDS.k.min).max(TUNING_BOUNDS.k.max),
 });

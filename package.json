@@ -27,7 +27,8 @@
     "test:unit": "node --experimental-strip-types --test tests/chunker.test.ts tests/redact.test.ts tests/ingest/quality.test.ts tests/learning/grade.test.ts tests/learning/primer.test.ts tests/learning/queryLog.test.ts tests/learning/tuner.test.ts tests/mcp/tuning.test.ts tests/mcp/scoreCalibration.test.ts tests/mcp/callerSession.test.ts tests/search/literalTokens.test.ts tests/search/rrfFusion.test.ts tests/search/recency.test.ts",
     "typecheck": "tsc --noEmit",
     "train:value": "node --env-file=.env --experimental-strip-types src/cli/trainValueModel.ts",
-    "classify:chunks": "node --env-file=.env --experimental-strip-types src/cli/classifyChunks.ts"
+    "classify:chunks": "node --env-file=.env --experimental-strip-types src/cli/classifyChunks.ts",
+    "build:entities": "node --env-file=.env --experimental-strip-types src/cli/buildEntities.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

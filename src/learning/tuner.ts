@@ -259,6 +259,7 @@ export function buildTuningProposal(
     // 2026-08-24: 198 credits zerados propondo 0.936 em `conversation`). Numa
     // dimensão com piso 0.5 isso desligaria metade do acervo por engano.
     valueDemote: current.valueDemote,
+    entityBoost: current.entityBoost,
     k: current.k,
   };
 

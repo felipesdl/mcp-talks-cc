@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import type { Session } from 'neo4j-driver';
 import { withSession } from '../../neo4j/driver.ts';
 import { embed } from '../../embeddings/localEmbedder.ts';
 import { toToolError } from '../../domain/errors.ts';
@@ -241,6 +242,33 @@ function normalizeRelevance(values: number[]): number[] {
   const max = Math.max(...finite);
   const span = max - min;
   return values.map((v) => (span > 0 ? (v - min) / span : 1));
+}
+
+/**
+ * Sessões "irmãs" da que está chamando: mesma task, ou que escreveram um
+ * arquivo em comum.
+ *
+ * É o vínculo mais barato que existe em tokens: influencia o ranking sem
+ * acrescentar uma palavra à resposta.
+ *
+ * O `f.idf > 2.0` no ramo de arquivo é essencial. Sem ele, um arquivo central
+ * como `contract/types.ts` (44 sessões) arrastaria 44 sessões inteiras pra
+ * dentro do conjunto e o boost deixaria de discriminar qualquer coisa.
+ *
+ * Risco conhecido: auto-reforço. O boost puxa sempre a mesma vizinhança e o
+ * acervo "de fora" some. Por isso o teto é 1.35 e o conjunto é vazio (boost
+ * neutro) quando a sessão chamadora não tem entidade nenhuma.
+ */
+async function kinSessions(s: Session, sessionId: string | null): Promise<Set<string>> {
+  if (!sessionId) return new Set();
+  const r = await s.run(`
+    MATCH (me:Session { id: $id })
+    OPTIONAL MATCH (me)-[:ON_TASK]->(:Task)<-[:ON_TASK]-(s1:Session)
+    OPTIONAL MATCH (me)-[:WROTE]->(f:File)<-[:WROTE]-(s2:Session) WHERE f.idf > 2.0
+    WITH collect(DISTINCT s1.id) + collect(DISTINCT s2.id) AS ids
+    RETURN [x IN ids WHERE x IS NOT NULL AND x <> $id][..200] AS kin
+  `, { id: sessionId });
+  return new Set((r.records[0]?.get('kin') as string[]) ?? []);
 }
 
 /**
@@ -546,12 +574,18 @@ async function searchMemory(args: {
     const relMap = new Map<string, number>();
     candidates.forEach((c, i) => relMap.set(c.id, relNorm[i] ?? 0));
 
+    const kin =
+      tuning.entityBoost > 1 ? await kinSessions(s, resolveCallerSession().sessionId) : new Set<string>();
+
     const picked = mmrSelect(
       candidates,
       lambda,
       k,
       (c) => relMap.get(c.id) ?? 0,
-      (c) => boostOf(c.meta) * valueMult(c, tuning.valueDemote),
+      (c) =>
+        boostOf(c.meta) *
+        valueMult(c, tuning.valueDemote) *
+        (c.meta.sessionId && kin.has(c.meta.sessionId) ? tuning.entityBoost : 1),
     );
 
     // (5) Context expansion + parent lookup (só dos k finais)

@@ -10,6 +10,11 @@ const CONSTRAINTS = [
   'CREATE CONSTRAINT todo_id IF NOT EXISTS FOR (t:Todo) REQUIRE t.id IS UNIQUE',
   'CREATE CONSTRAINT taskdoc_path IF NOT EXISTS FOR (t:TaskMemoryDoc) REQUIRE t.path IS UNIQUE',
   'CREATE CONSTRAINT toolcall_id IF NOT EXISTS FOR (tc:ToolCall) REQUIRE tc.id IS UNIQUE',
+  // Pré-requisito do backfill de entidades: sem unicidade, cada MERGE (t:Task)
+  // / MERGE (f:File) vira varredura de label por linha, e o passo vai de
+  // minutos para horas.
+  'CREATE CONSTRAINT task_key IF NOT EXISTS FOR (t:Task) REQUIRE t.key IS UNIQUE',
+  'CREATE CONSTRAINT file_key IF NOT EXISTS FOR (f:File) REQUIRE f.key IS UNIQUE',
 ];
 
 const INDEXES = [
@@ -17,6 +22,8 @@ const INDEXES = [
   'CREATE INDEX message_timestamp IF NOT EXISTS FOR (m:Message) ON (m.timestamp)',
   'CREATE INDEX session_project IF NOT EXISTS FOR (s:Session) ON (s.projectPath)',
   'CREATE INDEX chunk_source IF NOT EXISTS FOR (c:Chunk) ON (c.sourceKind)',
+  'CREATE INDEX file_repo IF NOT EXISTS FOR (f:File) ON (f.repo)',
+  'CREATE INDEX task_prefix IF NOT EXISTS FOR (t:Task) ON (t.prefix)',
 ];
 
 const FULLTEXT = [

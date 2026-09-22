@@ -1,4 +1,43 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { withSession } from '../../neo4j/driver.ts';
+
+/**
+ * Inventário de nós e arestas lido do banco, não escrito à mão.
+ *
+ * A versão anterior era 92 linhas de markdown fixo, e já estava errada antes de
+ * qualquer mudança nova: documentava `HAS_TODO`, que nunca produziu uma aresta
+ * sequer, e descrevia o score como `RRF: 1/(60+rank_vec) + 1/(60+rank_bm25)`, substituído por RRF.
+ * Doc de schema mantida à mão drifta; gerar é a única forma de não voltar a
+ * mentir. O glossário semântico abaixo continua escrito à mão porque ISSO o
+ * banco não sabe dizer.
+ */
+async function liveInventory(): Promise<string> {
+  try {
+    return await withSession(async (s) => {
+      const nodes = await s.run(
+        `CALL db.labels() YIELD label
+         CALL (label) { WITH label MATCH (n) WHERE label IN labels(n) RETURN count(n) AS n }
+         RETURN label, n ORDER BY n DESC`,
+      );
+      const edges = await s.run(
+        `CALL db.relationshipTypes() YIELD relationshipType AS t
+         CALL (t) { WITH t MATCH ()-[r]->() WHERE type(r) = t RETURN count(r) AS n }
+         RETURN t, n ORDER BY n DESC`,
+      );
+      const fmt = (rs: { get: (k: string) => unknown }[], a: string, b: string): string =>
+        rs.map((r) => `- ${String(r.get(a))} — ${String(r.get(b))}`).join('\n');
+      return [
+        '## Nodes (live count)',
+        fmt(nodes.records, 'label', 'n'),
+        '',
+        '## Edges (live count)',
+        fmt(edges.records, 't', 'n'),
+      ].join('\n');
+    });
+  } catch {
+    return '_(inventário indisponível: Neo4j fora do ar)_';
+  }
+}
 
 const SCHEMA_DOC = `# mcp-talks-cc — Neo4j schema
 
@@ -13,7 +52,11 @@ const SCHEMA_DOC = `# mcp-talks-cc — Neo4j schema
           ordinal, sourceKind, projectPath,
           sessionId, timestamp }                       — embeddable unit
 - Plan { path, slug, createdAt }                       — ~/.claude/plans/*.md
-- Todo { id, content, status, sessionId, filePath }    — ~/.claude/todos/*.json entries
+- Todo { ... } :Orphan                                — fonte dormente: ~/.claude/todos sumiu do disco;
+                                                        os 72 nós referenciam sessões inexistentes
+- Task { key, prefix, sessionCount,
+         firstSeenAt, lastSeenAt }                    — EDC-3197 etc, da branch e do texto
+- File { key, repo, path, ext, sessionCount, idf }    — arquivo tocado, do input do ToolCall
 - TaskMemoryDoc { path, taskId, kind, projectPath,
                   lastModified }                       — <project>/.claude/tasks/ABC-XXXX/*.md
 
@@ -27,7 +70,12 @@ const SCHEMA_DOC = `# mcp-talks-cc — Neo4j schema
 - (Plan)-[:HAS_CHUNK]->(Chunk)
 - (TaskMemoryDoc)-[:HAS_CHUNK]->(Chunk)
 - (Project)-[:HAS_TASK_MEMORY]->(TaskMemoryDoc)
-- (Session)-[:HAS_TODO]->(Todo)
+- (Session)-[:ON_TASK]->(Task)            — task da branch da sessão
+- (Chunk)-[:MENTIONS_TASK]->(Task)        — task citada no texto
+- (Session)-[:WROTE|READ]->(File)         — arquivo mudado / lido
+- (Task)-[:TOUCHES]->(File)               — derivada, responde trabalho relacionado em 1 hop
+- (Task)-[:IN_PROJECT]->(Project)
+- (Plan)-[:PLANNED_IN]->(Session), (Plan)-[:ABOUT_TASK]->(Task), (Project)-[:HAS_PLAN]->(Plan)
 - (Chunk)-[:SIMILAR_TO {score, computedAt}]->(Chunk)
   precomputed cross-chunk semantic neighbors (top-3, threshold>=0.75)
   use traversal via find_similar_chunks tool (no re-embed)
@@ -84,7 +132,7 @@ export function registerSchemaResource(server: McpServer): void {
         {
           uri: 'memory://schema',
           mimeType: 'text/markdown',
-          text: SCHEMA_DOC,
+          text: `${await liveInventory()}\n\n${SCHEMA_DOC}`,
         },
       ],
     }),
