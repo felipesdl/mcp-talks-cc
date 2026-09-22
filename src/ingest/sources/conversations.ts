@@ -121,6 +121,8 @@ interface EmbedInput {
   sourceKind: EmbedInputKind;
   text: string;
   timestamp: string;
+  /** Propagado até o ChunkRecord; era aqui que o campo se perdia. */
+  role: 'user' | 'assistant' | null;
 }
 
 interface ParsedSession {
@@ -195,6 +197,7 @@ export async function parseSessionFile(
         sourceKind: 'conversation',
         text: forEmbedding,
         timestamp: iso ?? '',
+        role,
       });
     }
 
@@ -222,6 +225,9 @@ export async function parseSessionFile(
             sourceKind: 'tool_output',
             text: fullText,
             timestamp: iso ?? '',
+            // Saída de ferramenta chega dentro de um evento de papel `user`,
+            // mas não é fala de ninguém: herdar o papel seria mentira.
+            role: null,
           });
         }
       }
@@ -266,6 +272,7 @@ function buildChunks(
         sourceKind: e.sourceKind,
         ordinal: i,
         text: piece,
+        role: e.role,
         embedding: [], // filled later
         projectPath: parsed.project.path,
         sessionId: parsed.session.id,

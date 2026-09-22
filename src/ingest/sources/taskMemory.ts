@@ -107,6 +107,8 @@ export async function ingestTaskMemory(
             ordinal: i,
             text: piece,
             embedding: [],
+            // Documento, não fala de ninguém.
+            role: null,
             projectPath,
             sessionId: null,
             timestamp: st.mtime.toISOString(),

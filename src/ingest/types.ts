@@ -40,6 +40,12 @@ export interface ChunkRecord {
   ordinal: number;
   text: string;
   embedding: number[];
+  /**
+   * Quem falou, propagado da Message. Nulo para chunk que não vem de conversa
+   * (Plan, TaskMemoryDoc) e para saída de ferramenta, que chega dentro de um
+   * evento de papel `user` mas não é fala de ninguém.
+   */
+  role: 'user' | 'assistant' | null;
   projectPath: string | null;
   sessionId: string | null;
   timestamp: string | null;

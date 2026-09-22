@@ -40,6 +40,7 @@ export class InvalidInputError extends Error {
 }
 
 export interface ToolErrorPayload {
+  [k: string]: unknown;
   isError: true;
   errorType: string;
   message: string;

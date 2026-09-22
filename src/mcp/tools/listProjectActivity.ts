@@ -17,6 +17,7 @@ const inputSchema = {
 };
 
 export interface ProjectActivity {
+  [k: string]: unknown;
   found: boolean;
   project: string;
   sessionCount: number;

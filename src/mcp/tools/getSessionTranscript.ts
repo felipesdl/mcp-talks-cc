@@ -20,6 +20,7 @@ const inputSchema = {
 };
 
 export interface TranscriptResult {
+  [k: string]: unknown;
   found: boolean;
   sessionId: string;
   project: string | null;

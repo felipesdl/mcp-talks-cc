@@ -137,6 +137,7 @@ export async function writeChunks(rows: ChunkRecord[]): Promise<void> {
                c.projectPath = r.projectPath,
                c.sessionId = r.sessionId,
                c.timestamp = r.timestamp,
+               c.role = r.role,
                c.embedding = r.embedding
            WITH c, r
            ${matchClause}

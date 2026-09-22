@@ -58,6 +58,8 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
         ordinal: i,
         text: piece,
         embedding: [],
+        // Documento, não fala de ninguém.
+        role: null,
         projectPath: null,
         sessionId: null,
         timestamp: st.mtime.toISOString(),

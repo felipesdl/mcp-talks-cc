@@ -58,7 +58,7 @@ export async function gradeEntry(
   const zeroHit = entry.nResults === 0;
 
   const echo = zeroHit
-    ? { echoRaw: null, perHit: {}, joinMethod: (entry.sessionId ? 'session' : 'timeWindow') as const, ambiguous: false, assistantTextChars: 0 }
+    ? { echoRaw: null, perHit: {}, joinMethod: (entry.sessionId ? 'session' : 'timeWindow') as 'session' | 'timeWindow', ambiguous: false, assistantTextChars: 0 }
     : await computeEcho(s, entry);
   const reform = await computeReformulation(entry, laterEntries);
   const drill = computeDrillIn(entry, laterEntries);
