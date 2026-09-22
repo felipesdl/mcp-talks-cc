@@ -129,6 +129,21 @@ else
   write_health "failed" "ingest exit ${code}"
 fi
 
+# ── Classificação de valor: chunk novo entra sem valueScore ─────────────────
+# Sem isto o conteúdo recente fica neutro e a demoção de narração só vale pro
+# acervo velho, ou seja o benefício decai com o tempo. Roda direto, sem throttle:
+# o predicado por versão só toca o que falta e a varredura custa ~12s no acervo
+# inteiro. Fail-open, como o resto do hook.
+if [ "${new_chunks:-0}" -gt 0 ]; then
+  if [ -f "$HOME/.cache/mcp-talks-cc/value-model.json" ]; then
+    log "classify:chunks start"
+    npm run classify:chunks -- --apply >> "$LOG" 2>&1
+    log "classify:chunks done (exit $?)"
+  else
+    log "classify:chunks pulado (sem value-model.json)"
+  fi
+fi
+
 # ── SIMILAR_TO: edges do find_similar_chunks só cobrem chunk já processado ───
 if [ "${new_chunks:-0}" -gt 0 ]; then
   similar_age=$(( $(now_epoch) - $(mtime_of "$SIMILAR_STAMP") ))
