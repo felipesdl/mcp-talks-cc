@@ -11,6 +11,8 @@ import {
   RECENCY_FLOOR,
   RECENCY_HALFLIFE_DAYS,
   VALUE_DEMOTE_THRESHOLD,
+  QUERY_TASK_BOOST,
+  TASK_RECALL_LIMIT,
   RECALL_POOL,
   RECALL_POOL_MAX,
   MMR_POOL_MULT,
@@ -18,6 +20,7 @@ import {
 } from '../tuning.ts';
 import { confidenceFromVec, getScoreCalibration } from '../scoreCalibration.ts';
 import { lexicalHints } from '../../ingest/quality.ts';
+import { taskKeysFromText } from '../../ingest/entities.ts';
 import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
 
@@ -196,6 +199,8 @@ interface PreCandidate {
   /** Posição 1-based em cada lista; null = não apareceu naquela lista. */
   vec_rank: number | null;
   bm25_rank: number | null;
+  /** Terceira lista: chunk de sessão cuja task a query nomeia. */
+  task_rank: number | null;
   meta: CandidateMeta;
 }
 
@@ -220,10 +225,11 @@ interface Candidate extends PreCandidate {
  * RRF compara posições, não magnitudes, então as duas escalas deixam de
  * precisar ser comensuráveis e aparecer nas duas listas só soma.
  */
-function rrfScore(c: Pick<PreCandidate, 'vec_rank' | 'bm25_rank'>): number {
+function rrfScore(c: Pick<PreCandidate, 'vec_rank' | 'bm25_rank' | 'task_rank'>): number {
   return (
     (c.vec_rank !== null ? 1 / (RRF_K + c.vec_rank) : 0) +
-    (c.bm25_rank !== null ? 1 / (RRF_K + c.bm25_rank) : 0)
+    (c.bm25_rank !== null ? 1 / (RRF_K + c.bm25_rank) : 0) +
+    (c.task_rank !== null ? 1 / (RRF_K + c.task_rank) : 0)
   );
 }
 
@@ -242,6 +248,30 @@ function normalizeRelevance(values: number[]): number[] {
   const max = Math.max(...finite);
   const span = max - min;
   return values.map((v) => (span > 0 ? (v - min) / span : 1));
+}
+
+/**
+ * Sessões da task que a PRÓPRIA QUERY nomeia.
+ *
+ * Diferente do boost por chamador: aqui o vínculo é explícito, o usuário
+ * escreveu `EDC-3197`. Antes disto, achar a sessão daquela task dependia de o
+ * cosseno e o BM25 colocarem um chunk dela no top-k, e isso falhava justamente
+ * onde mais dói: as 28 falhas medidas eram todas de sessões de janeiro a maio,
+ * com 33 chunks de média contra 84 das demais. Memória antiga e magra deixava
+ * de ser recuperável.
+ *
+ * Com o nó de Task o vínculo é estrutural, então o acerto para de depender de
+ * ranking. Multiplicador próprio e alto, porque a evidência aqui é literal e
+ * não estatística.
+ */
+async function sessionsOfQueryTasks(s: Session, query: string): Promise<Set<string>> {
+  const keys = taskKeysFromText(query);
+  if (keys.length === 0) return new Set();
+  const r = await s.run(
+    `MATCH (t:Task)<-[:ON_TASK]-(se:Session) WHERE t.key IN $keys RETURN collect(se.id) AS ids`,
+    { keys },
+  );
+  return new Set((r.records[0]?.get('ids') as string[]) ?? []);
 }
 
 /**
@@ -341,7 +371,7 @@ export interface SearchResult {
   calibrated: boolean;
 }
 
-async function searchMemory(args: {
+export async function searchMemory(args: {
   query: string;
   k?: number;
   scope?: ('conversation' | 'tool_output' | 'plan' | 'todo' | 'task_memory')[];
@@ -380,6 +410,8 @@ async function searchMemory(args: {
     // scope/project/since são post-filter (o índice vetorial do Neo4j 5.26
     // community não aceita pre-filter), então o pool precisa ser fundo o
     // bastante pra sobrar material depois deles.
+    const queryTaskSessions = await sessionsOfQueryTasks(s, args.query);
+
     const stageA = async (poolSize: number): Promise<PreCandidate[]> => {
       const vecRes = await s.run(
         `CALL db.index.vector.queryNodes('chunks_embedding', toInteger($poolSize), $vec)
@@ -465,6 +497,49 @@ async function searchMemory(args: {
       // vetorial com rerank lexical, e casar o token literal nunca recrutava
       // ninguém. Medido em `EDC-3197`: dos 500 hits de fulltext, só 155 caíam
       // no pool vetorial.
+      // Terceira fonte de RECALL, não de reordenação. Boost não resgata o que
+      // nunca entrou no pool: as sessões antigas e magras de uma task não
+      // apareciam entre os 500 candidatos vetoriais, então empurrá-las chegava
+      // tarde. Aqui elas entram por construção, e o acerto para de depender de
+      // o cosseno ter sorte.
+      const taskMap = new Map<string, { rank: number; meta: CandidateMeta }>();
+      if (queryTaskSessions.size > 0) {
+        const tr = await s.run(
+          `MATCH (c:Chunk) WHERE c.sessionId IN $sids
+             AND ($scope IS NULL OR c.sourceKind IN $scope)
+             AND ($project IS NULL OR c.projectPath = $project)
+             AND ($since IS NULL OR c.timestamp >= $since)
+           RETURN c.id AS id, c.sourceKind AS source, c.sessionId AS sessionId,
+                  c.projectPath AS project, c.timestamp AS timestamp,
+                  c.valueScore AS valueScore, c.role AS role
+           ORDER BY coalesce(c.valueScore, 0.5) DESC
+           LIMIT toInteger($limit)`,
+          {
+            sids: [...queryTaskSessions],
+            limit: TASK_RECALL_LIMIT,
+            scope: args.scope ?? null,
+            project: projectFilter,
+            since: args.since ?? null,
+          },
+        );
+        tr.records.forEach((r, i) => {
+          const id = r.get('id') as string;
+          if (taskMap.has(id)) return;
+          taskMap.set(id, {
+            rank: i + 1,
+            meta: {
+              id,
+              source: r.get('source'),
+              sessionId: r.get('sessionId'),
+              project: r.get('project'),
+              timestamp: r.get('timestamp'),
+              valueScore: r.get('valueScore') === null ? null : Number(r.get('valueScore')),
+              role: r.get('role'),
+            },
+          });
+        });
+      }
+
       const seen = new Set<string>();
       const out: PreCandidate[] = [];
       vecRes.records.forEach((rec, i) => {
@@ -478,6 +553,7 @@ async function searchMemory(args: {
           bm25_score: ft?.score ?? null,
           vec_rank: i + 1,
           bm25_rank: ft?.rank ?? null,
+          task_rank: taskMap.get(id)?.rank ?? null,
           meta: {
             id,
             source: rec.get('source'),
@@ -498,7 +574,21 @@ async function searchMemory(args: {
           bm25_score: ft.score,
           vec_rank: null,
           bm25_rank: ft.rank,
+          task_rank: taskMap.get(id)?.rank ?? null,
           meta: ft.meta,
+        });
+      }
+      for (const [id, t] of taskMap) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          id,
+          vec_score: null,
+          bm25_score: null,
+          vec_rank: null,
+          bm25_rank: null,
+          task_rank: t.rank,
+          meta: t.meta,
         });
       }
       return out;
@@ -531,8 +621,16 @@ async function searchMemory(args: {
     // vem depois, sobre os finalistas), cosseno puro quando não.
     const cutScore = (c: PreCandidate): number =>
       hybrid ? rrfScore(c) : (c.vec_score ?? 0);
+    // Aplicado JÁ no corte: a sessão antiga e magra da task muitas vezes nem
+    // chegava aos finalistas, então boostar só no MMR chegaria tarde.
+    const taskMult = (m: CandidateMeta): number =>
+      m.sessionId && queryTaskSessions.has(m.sessionId) ? QUERY_TASK_BOOST : 1;
     const finalists = [...pool]
-      .sort((a, b) => cutScore(b) * boostOf(b.meta) - cutScore(a) * boostOf(a.meta))
+      .sort(
+        (a, b) =>
+          cutScore(b) * boostOf(b.meta) * taskMult(b.meta) -
+          cutScore(a) * boostOf(a.meta) * taskMult(a.meta),
+      )
       .slice(0, mmrPool);
 
     // (3) Estágio B — embedding e texto só dos finalistas.
@@ -585,7 +683,8 @@ async function searchMemory(args: {
       (c) =>
         boostOf(c.meta) *
         valueMult(c, tuning.valueDemote) *
-        (c.meta.sessionId && kin.has(c.meta.sessionId) ? tuning.entityBoost : 1),
+        (c.meta.sessionId && kin.has(c.meta.sessionId) ? tuning.entityBoost : 1) *
+        (c.meta.sessionId && queryTaskSessions.has(c.meta.sessionId) ? QUERY_TASK_BOOST : 1),
     );
 
     // (5) Context expansion + parent lookup (só dos k finais)

@@ -21,8 +21,15 @@ export const TASK_PREFIXES = ['EDC', 'US', 'DEV', 'QUAL'] as const;
 
 const PREFIX_GROUP = TASK_PREFIXES.join('|');
 
-/** Início da branch: `EDC-3197-sol-5292-candidatura-travada` → `EDC-3197`. */
-const BRANCH_RE = new RegExp(`^(${PREFIX_GROUP})-(\\d{1,6})(?:[-_/]|$)`, 'i');
+/**
+ * Primeiro código na branch, em qualquer posição.
+ *
+ * Ancorar no início parecia mais seguro e custou um caso real: a branch
+ * `feature/US-372-delegated-ein-insurance-submission` ficava sem task. Como o
+ * prefixo é de uma allowlist curta, procurar em qualquer posição não abre
+ * espaço para falso positivo.
+ */
+const BRANCH_RE = new RegExp(`(?:^|[^A-Za-z0-9])(${PREFIX_GROUP})-(\\d{1,6})(?:[-_/]|$)`, 'i');
 
 /**
  * No texto exige MAIÚSCULA e 2+ dígitos. Minúsculo só aparece em slug e URL,

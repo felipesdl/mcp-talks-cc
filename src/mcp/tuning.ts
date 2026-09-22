@@ -37,6 +37,19 @@ export const RRF_K = 60;
  */
 export const VALUE_DEMOTE_THRESHOLD = 0.3;
 
+/**
+ * Peso para chunk de sessão cuja task a query NOMEIA explicitamente.
+ *
+ * Alto porque a evidência é literal, não estatística: o usuário escreveu o
+ * código da task e existe uma aresta ON_TASK ligando aquela sessão a ele. Não
+ * é tunável pelo loop justamente por isso — não há o que aprender sobre uma
+ * correspondência exata.
+ */
+export const QUERY_TASK_BOOST = 1.6;
+
+/** Teto de chunks recrutados pela task nomeada na query. */
+export const TASK_RECALL_LIMIT = 120;
+
 // Retrieval em dois estágios. O bge-m3 devolve cosseno entre 0.87 e 0.91 pra
 // praticamente qualquer par, então o ranking por similaridade pura é quase
 // arbitrário nessa faixa: medido em 2026-08-03, 2000 candidatos couberam em
