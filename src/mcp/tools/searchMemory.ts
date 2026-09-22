@@ -6,7 +6,7 @@ import { toToolError } from '../../domain/errors.ts';
 import {
   getTuning,
   LAMBDA_DEFAULT,
-  HYBRID_VEC_WEIGHT,
+  RRF_K,
   RECENCY_FLOOR,
   RECENCY_HALFLIFE_DAYS,
   RECALL_POOL,
@@ -128,15 +128,33 @@ export function recencyMult(
   return Math.max(RECENCY_FLOOR, Math.pow(0.5, ageDays / RECENCY_HALFLIFE_DAYS));
 }
 
-function escapeLucene(q: string): string {
-  // Neo4j fulltext uses Lucene syntax; escape special chars to treat as literal
-  return q.replace(/[+\-!(){}\[\]^"~*?:\\/]/g, '\\$&');
+/**
+ * Query lexical a partir SÓ dos tokens literais, cada um como frase exata.
+ *
+ * O escape antigo (`q.replace(/[+\-...]/g, '\\$&')`) preservava o hífen como
+ * caractere mas não como separador: o analyzer padrão quebrava `EDC\-3197` em
+ * `EDC` OR `3197`, então a busca casava todo chunk que citasse qualquer EDC.
+ * Medido: `EDC\-3197` batia em 500 chunks (o pool inteiro), `"EDC-3197"` bate
+ * em 15, que é exatamente o `CONTAINS` real. Com tudo casando, o BM25 não
+ * discriminava nada e o sinal lexical virava ruído uniforme.
+ *
+ * Só os tokens de LITERAL_TOKEN_RE entram: o resto da frase é prosa, que já é
+ * trabalho do vetor. Retorna null quando não há token literal (o caller então
+ * não roda fulltext nenhum).
+ */
+export function buildFulltextQuery(q: string): string | null {
+  LITERAL_TOKEN_RE.lastIndex = 0;
+  const tokens = [...new Set(q.match(LITERAL_TOKEN_RE) ?? [])];
+  if (tokens.length === 0) return null;
+  return tokens
+    .map((t) => `"${t.replace(/[\\"]/g, '\\$&')}"`)
+    .join(' OR ');
 }
 
 /**
  * Saturação do BM25 pra [0,1): `s / (s + med)`, com med = mediana do pool
  * retornado. Antes era max-normalização, que forçava o top a 1.0 sempre e
- * dava +0.30 fixo (HYBRID_VEC_WEIGHT) no score do primeiro hit, independente
+ * dava +0.30 fixo no score do primeiro hit, independente
  * de o match lexical ser bom ou ruim. Monótona e sem teto artificial.
  */
 export function saturateBm25(values: number[]): number[] {
@@ -164,8 +182,12 @@ interface CandidateMeta {
 /** Candidato do estágio A (pool largo): sem embedding, sem texto. */
 interface PreCandidate {
   id: string;
-  vec_score: number;
+  /** null = veio só do BM25; o cosseno real é calculado no estágio B. */
+  vec_score: number | null;
   bm25_score: number | null;
+  /** Posição 1-based em cada lista; null = não apareceu naquela lista. */
+  vec_rank: number | null;
+  bm25_rank: number | null;
   meta: CandidateMeta;
 }
 
@@ -173,23 +195,52 @@ interface PreCandidate {
 interface Candidate extends PreCandidate {
   embedding: number[];
   snippet: string;
+  /** No estágio B todo finalista tem cosseno, inclusive o que veio só do BM25. */
+  vec_score: number;
 }
 
-/** Score híbrido cru (sem boosts) — é o que sai no campo `score` dos hits. */
-function rawScore(
-  c: Pick<PreCandidate, 'vec_score' | 'bm25_score'>,
-  hybrid: boolean,
-): number {
-  return hybrid && c.bm25_score !== null
-    ? HYBRID_VEC_WEIGHT * c.vec_score + (1 - HYBRID_VEC_WEIGHT) * c.bm25_score
-    : c.vec_score;
+/**
+ * Fusão por rank (RRF), não por soma de scores.
+ *
+ * A fusão anterior era `0.7*vec + 0.3*bm25`, com `bm25 null` caindo pra `vec`
+ * puro. Como o cosseno do bge-m3 vive comprimido em ~0.82-0.89 e o BM25
+ * saturado gira em torno de 0.5, misturar ABAIXAVA o score: casar lexicalmente
+ * virava penalidade, e um chunk sem match nenhum guardava o vec inteiro. Na
+ * busca por `EDC-3197` o plano da própria task caía pro rank 349 enquanto os
+ * finalistas são os 25 primeiros.
+ *
+ * RRF compara posições, não magnitudes, então as duas escalas deixam de
+ * precisar ser comensuráveis e aparecer nas duas listas só soma.
+ */
+function rrfScore(c: Pick<PreCandidate, 'vec_rank' | 'bm25_rank'>): number {
+  return (
+    (c.vec_rank !== null ? 1 / (RRF_K + c.vec_rank) : 0) +
+    (c.bm25_rank !== null ? 1 / (RRF_K + c.bm25_rank) : 0)
+  );
+}
+
+/**
+ * Relevância crua em [0,1], que é o que o MMR e o campo `score` consomem.
+ *
+ * Sem híbrido continua sendo o cosseno, igual antes. Com híbrido é o RRF
+ * normalizado min-max DENTRO dos finalistas: o RRF cru vale ~0.03 no topo, e
+ * nessa escala o termo de diversidade do MMR (`(1-lambda)*maxSim`, ~0.27)
+ * engoliria a relevância por completo e a seleção degeneraria em diversidade
+ * pura.
+ */
+function normalizeRelevance(values: number[]): number[] {
+  const finite = values.filter((v) => Number.isFinite(v));
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const span = max - min;
+  return values.map((v) => (span > 0 ? (v - min) / span : 1));
 }
 
 function mmrSelect(
   pool: Candidate[],
   lambda: number,
   k: number,
-  hybrid: boolean,
+  relOf: (c: Candidate) => number,
   boostOf: (c: Candidate) => number,
 ): Candidate[] {
   const selected: Candidate[] = [];
@@ -202,7 +253,7 @@ function mmrSelect(
       const c = remaining[i]!;
       // boost multiplica SÓ o termo de relevância (ranking); o termo de
       // diversidade (maxSim) e o score reportado ficam crus.
-      const rel = rawScore(c, hybrid) * boostOf(c);
+      const rel = relOf(c) * boostOf(c);
       const maxSim =
         selected.length === 0
           ? 0
@@ -288,9 +339,11 @@ async function searchMemory(args: {
         },
       );
 
-      // Fulltext no mesmo tamanho de pool; BM25 satura sobre ele.
-      const ftMap = new Map<string, number>();
-      if (hybrid) {
+      // Fulltext no mesmo tamanho de pool; BM25 satura sobre ele (só pra
+      // reportar: quem ordena agora é o rank, via RRF).
+      const ftMap = new Map<string, { score: number; rank: number; meta: CandidateMeta }>();
+      const ftQuery = hybrid ? buildFulltextQuery(args.query) : null;
+      if (ftQuery) {
         try {
           const ftRes = await s.run(
             `CALL db.index.fulltext.queryNodes('chunks_text', $query, { limit: toInteger($limit) })
@@ -298,9 +351,15 @@ async function searchMemory(args: {
              WHERE ($scope IS NULL OR node.sourceKind IN $scope)
                AND ($project IS NULL OR node.projectPath = $project)
                AND ($since IS NULL OR node.timestamp >= $since)
-             RETURN node.id AS id, score`,
+             RETURN node.id AS id,
+                    score,
+                    node.sourceKind AS source,
+                    node.sessionId AS sessionId,
+                    node.projectPath AS project,
+                    node.timestamp AS timestamp
+             ORDER BY score DESC`,
             {
-              query: escapeLucene(args.query),
+              query: ftQuery,
               limit: poolSize,
               scope: args.scope ?? null,
               project: projectFilter,
@@ -310,7 +369,19 @@ async function searchMemory(args: {
           const rawScores = ftRes.records.map((r) => Number(r.get('score')));
           const saturated = saturateBm25(rawScores);
           ftRes.records.forEach((r, i) => {
-            ftMap.set(r.get('id') as string, saturated[i] ?? 0);
+            const id = r.get('id') as string;
+            if (ftMap.has(id)) return;
+            ftMap.set(id, {
+              score: saturated[i] ?? 0,
+              rank: i + 1,
+              meta: {
+                id,
+                source: r.get('source'),
+                sessionId: r.get('sessionId'),
+                project: r.get('project'),
+                timestamp: r.get('timestamp'),
+              },
+            });
           });
         } catch (e) {
           // fulltext index may not exist yet — fall back to vector only
@@ -318,16 +389,25 @@ async function searchMemory(args: {
         }
       }
 
+      // Pool = UNIÃO das duas listas. Antes o loop iterava só `vecRes`, então
+      // um hit de BM25 fora do top-N vetorial era calculado, saturado, posto no
+      // ftMap e descartado em silêncio: na prática o "hybrid" era recall
+      // vetorial com rerank lexical, e casar o token literal nunca recrutava
+      // ninguém. Medido em `EDC-3197`: dos 500 hits de fulltext, só 155 caíam
+      // no pool vetorial.
       const seen = new Set<string>();
       const out: PreCandidate[] = [];
-      for (const rec of vecRes.records) {
+      vecRes.records.forEach((rec, i) => {
         const id = rec.get('id') as string;
-        if (seen.has(id)) continue;
+        if (seen.has(id)) return;
         seen.add(id);
+        const ft = ftMap.get(id);
         out.push({
           id,
           vec_score: Number(rec.get('vec_score')),
-          bm25_score: ftMap.has(id) ? ftMap.get(id)! : null,
+          bm25_score: ft?.score ?? null,
+          vec_rank: i + 1,
+          bm25_rank: ft?.rank ?? null,
           meta: {
             id,
             source: rec.get('source'),
@@ -335,6 +415,18 @@ async function searchMemory(args: {
             project: rec.get('project'),
             timestamp: rec.get('timestamp'),
           },
+        });
+      });
+      for (const [id, ft] of ftMap) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          id,
+          vec_score: null,
+          bm25_score: ft.score,
+          vec_rank: null,
+          bm25_rank: ft.rank,
+          meta: ft.meta,
         });
       }
       return out;
@@ -351,18 +443,24 @@ async function searchMemory(args: {
     // fundo da query: mediana de vec do pool de RECALL (não do top-k), pra o
     // caller ver o quão alto o piso de similaridade está naquela busca. É a
     // estimativa de ruído que a confidence consome (ver scoreCalibration.ts).
-    const poolVec = pool.map((c) => c.vec_score).sort((a, b) => a - b);
+    // Só quem veio da lista vetorial entra: é o piso de SIMILARIDADE da query,
+    // e candidato recrutado só pelo BM25 ainda não tem cosseno neste estágio.
+    const poolVec = pool
+      .map((c) => c.vec_score)
+      .filter((v): v is number => v !== null)
+      .sort((a, b) => a - b);
     const poolVecMedian = poolVec[Math.floor(poolVec.length / 2)] ?? null;
     const calibration = getScoreCalibration();
 
     // (2) Re-ranking com os boosts aprendidos ANTES do corte. Aqui é que
     // perProject/perSourceKind/recência ganham poder de trazer pro top-k um
     // chunk que o cosseno puro tinha deixado de fora.
+    // Ordenação de corte: RRF cru quando híbrido (monótono, a normalização
+    // vem depois, sobre os finalistas), cosseno puro quando não.
+    const cutScore = (c: PreCandidate): number =>
+      hybrid ? rrfScore(c) : (c.vec_score ?? 0);
     const finalists = [...pool]
-      .sort(
-        (a, b) =>
-          rawScore(b, hybrid) * boostOf(b.meta) - rawScore(a, hybrid) * boostOf(a.meta),
-      )
+      .sort((a, b) => cutScore(b) * boostOf(b.meta) - cutScore(a) * boostOf(a.meta))
       .slice(0, mmrPool);
 
     // (3) Estágio B — embedding e texto só dos finalistas.
@@ -381,12 +479,36 @@ async function searchMemory(args: {
     }
     const candidates: Candidate[] = finalists.flatMap((f) => {
       const e = embMap.get(f.id);
-      return e ? [{ ...f, snippet: e.snippet, embedding: e.embedding }] : [];
+      if (!e) return [];
+      return [
+        {
+          ...f,
+          snippet: e.snippet,
+          embedding: e.embedding,
+          // Recrutado só pelo BM25 não passou pelo índice vetorial, então o
+          // cosseno sai aqui. Sem isso ele ficaria sem `confidence`, que é
+          // justamente o número que decide se o hit pode ser citado.
+          vec_score: f.vec_score ?? cosine(e.embedding, qvec),
+        },
+      ];
     });
     if (candidates.length === 0) return empty;
 
-    // (4) MMR (ranking usa boosts aprendidos; scores reportados ficam crus)
-    const picked = mmrSelect(candidates, lambda, k, hybrid, (c) => boostOf(c.meta));
+    // (4) MMR (ranking usa boosts aprendidos; scores reportados ficam crus).
+    // A relevância é normalizada em [0,1] sobre os finalistas pra ficar na
+    // mesma escala do termo de diversidade (cosseno) dentro do MMR.
+    const relRaw = candidates.map((c) => (hybrid ? rrfScore(c) : c.vec_score));
+    const relNorm = hybrid ? normalizeRelevance(relRaw) : relRaw;
+    const relMap = new Map<string, number>();
+    candidates.forEach((c, i) => relMap.set(c.id, relNorm[i] ?? 0));
+
+    const picked = mmrSelect(
+      candidates,
+      lambda,
+      k,
+      (c) => relMap.get(c.id) ?? 0,
+      (c) => boostOf(c.meta),
+    );
 
     // (5) Context expansion + parent lookup (só dos k finais)
     const ids = picked.map((p) => p.id);
@@ -419,7 +541,7 @@ async function searchMemory(args: {
         // score RAW (sem boost) serve pra ORDENAÇÃO e comparação dentro da
         // mesma query. Pra decidir se cita, use `confidence`: o score cru não
         // é comparável entre queries (ver src/mcp/scoreCalibration.ts).
-        score: rawScore(c, hybrid),
+        score: relMap.get(c.id) ?? 0,
         confidence: confidenceFromVec(c.vec_score, calibration, poolVecMedian),
         vec_score: c.vec_score,
         bm25_score: c.bm25_score,

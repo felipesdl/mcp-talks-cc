@@ -6,7 +6,20 @@ import { TUNING_BOUNDS, type Tuning } from '../learning/types.ts';
 // lambda e peso hybrid NÃO são tunados pelo loop (decisão: tuner coadjuvante);
 // o self-tune apenas comenta sobre eles no rationale.
 export const LAMBDA_DEFAULT = 0.7;
-export const HYBRID_VEC_WEIGHT = 0.7;
+
+/**
+ * Constante do Reciprocal Rank Fusion: `1/(RRF_K + rank)` por lista.
+ *
+ * 60 é o valor do paper original (Cormack et al., 2009) e o default de
+ * praticamente toda implementação. Amortece a diferença entre os primeiros
+ * ranks, então um hit em 1º numa lista não atropela sozinho um hit que está em
+ * 3º nas duas.
+ *
+ * Substituiu o HYBRID_VEC_WEIGHT=0.7 da fusão por soma ponderada, que exigia
+ * que cosseno e BM25 saturado fossem comensuráveis. Não eram: casar o token
+ * literal virava penalidade no score. Ver rrfScore() em tools/searchMemory.ts.
+ */
+export const RRF_K = 60;
 
 // Retrieval em dois estágios. O bge-m3 devolve cosseno entre 0.87 e 0.91 pra
 // praticamente qualquer par, então o ranking por similaridade pura é quase
