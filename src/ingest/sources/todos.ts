@@ -38,11 +38,11 @@ export async function ingestTodos(opts: { force?: boolean } = {}): Promise<{
   let skipped = 0;
 
   for (const fp of files) {
-    if (!opts.force && (await isUnchanged(fp))) {
-      skipped++;
-      continue;
-    }
     try {
+      if (!opts.force && (await isUnchanged(fp))) {
+        skipped++;
+        continue;
+      }
       const raw = JSON.parse(await readFile(fp, 'utf8')) as RawTodo[];
       if (!Array.isArray(raw)) continue;
       const sid = sessionIdFromFilename(basename(fp));

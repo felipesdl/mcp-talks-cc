@@ -8,7 +8,9 @@ import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
 import { prepareConversationText } from '../quality.ts';
 import { embedBatched } from '../../embeddings/localEmbedder.ts';
-import { isUnchanged, markIngested, save as saveCheckpoint } from '../checkpoint.ts';
+import { fingerprint, isUnchanged, markIngested, save as saveCheckpoint } from '../checkpoint.ts';
+import type { Fingerprint } from '../checkpoint.ts';
+import { countReadError } from '../fsErrors.ts';
 import {
   writeProjects,
   writeSessions,
@@ -302,6 +304,8 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
   messages: number;
   chunks: number;
   skipped: number;
+  vanished: number;
+  failed: number;
 }> {
   const projectsDir = join(config.paths.claudeHome, 'projects');
   let dirs: string[];
@@ -309,7 +313,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     dirs = await readdir(projectsDir);
   } catch {
     console.error(`[conv] no projects dir at ${projectsDir}`);
-    return { files: 0, sessions: 0, messages: 0, chunks: 0, skipped: 0 };
+    return { files: 0, sessions: 0, messages: 0, chunks: 0, skipped: 0, vanished: 0, failed: 0 };
   }
 
   const files: string[] = [];
@@ -317,7 +321,8 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     const dp = join(projectsDir, d);
     const st = await stat(dp).catch(() => null);
     if (!st?.isDirectory()) continue;
-    const entries = (await readdir(dp, { recursive: true })) as string[];
+    // Pasta de projeto pode sumir entre o stat e o readdir (mesma poda do cleanup).
+    const entries = ((await readdir(dp, { recursive: true }).catch(() => [])) as string[]);
     for (const f of entries) {
       if (f.endsWith('.jsonl')) {
         const fp = join(dp, f);
@@ -334,6 +339,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
   let totalMessages = 0;
   let totalChunks = 0;
   let skipped = 0;
+  const readErrors = { vanished: 0, failed: 0 };
   let sinceFlush = 0;
 
   const flush = async (): Promise<void> => {
@@ -345,14 +351,24 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
 
   for (let i = 0; i < target.length; i++) {
     const fp = target[i]!;
-    if (!opts.force && (await isUnchanged(fp))) {
-      skipped++;
+    const t0 = Date.now();
+    // Só leitura de arquivo dentro do try: writes e embed abaixo continuam
+    // derrubando o run (ver countReadError).
+    let print: Fingerprint;
+    let parsed: ParsedSession | null;
+    try {
+      if (!opts.force && (await isUnchanged(fp))) {
+        skipped++;
+        continue;
+      }
+      print = await fingerprint(fp);
+      parsed = await parseSessionFile(fp, opts.includeToolOutputs ?? false);
+    } catch (err) {
+      countReadError('conv', basename(fp), err, readErrors);
       continue;
     }
-    const t0 = Date.now();
-    const parsed = await parseSessionFile(fp, opts.includeToolOutputs ?? false);
     if (!parsed) {
-      await markIngested(fp);
+      await markIngested(fp, print);
       await flush();
       continue;
     }
@@ -369,7 +385,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
       await writeChunks(chunks);
     }
 
-    await markIngested(fp);
+    await markIngested(fp, print);
     await flush();
 
     totalSessions++;
@@ -386,5 +402,6 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     messages: totalMessages,
     chunks: totalChunks,
     skipped,
+    ...readErrors,
   };
 }

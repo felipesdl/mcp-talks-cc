@@ -1,11 +1,14 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { config } from '../../config.ts';
 import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
 import { embedBatched } from '../../embeddings/localEmbedder.ts';
-import { isUnchanged, markIngested } from '../checkpoint.ts';
+import { fingerprint, isUnchanged, markIngested } from '../checkpoint.ts';
+import type { Fingerprint } from '../checkpoint.ts';
+import { countReadError } from '../fsErrors.ts';
 import { writeProjects, writeTaskMemoryDocs, writeChunks } from '../writer.ts';
 import type {
   ProjectRecord,
@@ -57,9 +60,18 @@ async function listTaskDirs(projectPath: string): Promise<{ taskId: string; dir:
 
 export async function ingestTaskMemory(
   opts: { force?: boolean } = {},
-): Promise<{ projects: number; docs: number; chunks: number; skipped: number }> {
+): Promise<{
+  projects: number;
+  docs: number;
+  chunks: number;
+  skipped: number;
+  vanished: number;
+  failed: number;
+}> {
   const projects = await listProjects();
-  if (projects.length === 0) return { projects: 0, docs: 0, chunks: 0, skipped: 0 };
+  if (projects.length === 0) {
+    return { projects: 0, docs: 0, chunks: 0, skipped: 0, vanished: 0, failed: 0 };
+  }
 
   const projectRecords: ProjectRecord[] = projects.map((p) => ({
     path: p,
@@ -71,6 +83,7 @@ export async function ingestTaskMemory(
   const allChunks: ChunkRecord[] = [];
   const allTexts: string[] = [];
   let skipped = 0;
+  const readErrors = { vanished: 0, failed: 0 };
 
   for (const projectPath of projects) {
     const tasks = await listTaskDirs(projectPath);
@@ -78,12 +91,21 @@ export async function ingestTaskMemory(
       const files = (await readdir(dir).catch(() => [])).filter((f) => f.endsWith('.md'));
       for (const f of files) {
         const fp = join(dir, f);
-        if (!opts.force && (await isUnchanged(fp))) {
-          skipped++;
+        let st: Stats;
+        let content: string;
+        let print: Fingerprint;
+        try {
+          if (!opts.force && (await isUnchanged(fp))) {
+            skipped++;
+            continue;
+          }
+          print = await fingerprint(fp);
+          st = await stat(fp);
+          content = await readFile(fp, 'utf8');
+        } catch (err) {
+          countReadError('tasks', basename(fp), err, readErrors);
           continue;
         }
-        const st = await stat(fp);
-        const content = await readFile(fp, 'utf8');
         const kind = basename(f, '.md');
 
         allDocs.push({
@@ -115,7 +137,7 @@ export async function ingestTaskMemory(
           });
           allTexts.push(piece);
         }
-        await markIngested(fp);
+        await markIngested(fp, print);
       }
     }
   }
@@ -132,5 +154,6 @@ export async function ingestTaskMemory(
     docs: allDocs.length,
     chunks: allChunks.length,
     skipped,
+    ...readErrors,
   };
 }

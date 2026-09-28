@@ -1,11 +1,14 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { config } from '../../config.ts';
 import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
 import { embedBatched } from '../../embeddings/localEmbedder.ts';
-import { isUnchanged, markIngested } from '../checkpoint.ts';
+import { fingerprint, isUnchanged, markIngested } from '../checkpoint.ts';
+import type { Fingerprint } from '../checkpoint.ts';
+import { countReadError } from '../fsErrors.ts';
 import { writePlans, writeChunks } from '../writer.ts';
 import type { PlanRecord, ChunkRecord } from '../types.ts';
 
@@ -13,6 +16,8 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
   files: number;
   chunks: number;
   skipped: number;
+  vanished: number;
+  failed: number;
 }> {
   const dir = join(config.paths.claudeHome, 'plans');
   let entries: string[];
@@ -20,23 +25,33 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
     entries = await readdir(dir);
   } catch {
     console.error(`[plans] no dir at ${dir}`);
-    return { files: 0, chunks: 0, skipped: 0 };
+    return { files: 0, chunks: 0, skipped: 0, vanished: 0, failed: 0 };
   }
 
   const mdFiles = entries.filter((f) => f.endsWith('.md')).map((f) => join(dir, f));
   let totalChunks = 0;
   let skipped = 0;
+  const readErrors = { vanished: 0, failed: 0 };
   const plans: PlanRecord[] = [];
   const allChunks: ChunkRecord[] = [];
   const allTexts: string[] = [];
 
   for (const fp of mdFiles) {
-    if (!opts.force && (await isUnchanged(fp))) {
-      skipped++;
+    let st: Stats;
+    let content: string;
+    let print: Fingerprint;
+    try {
+      if (!opts.force && (await isUnchanged(fp))) {
+        skipped++;
+        continue;
+      }
+      print = await fingerprint(fp);
+      st = await stat(fp);
+      content = await readFile(fp, 'utf8');
+    } catch (err) {
+      countReadError('plans', basename(fp), err, readErrors);
       continue;
     }
-    const st = await stat(fp);
-    const content = await readFile(fp, 'utf8');
     const slug = basename(fp, '.md');
 
     plans.push({
@@ -66,7 +81,7 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
       });
       allTexts.push(piece);
     }
-    await markIngested(fp);
+    await markIngested(fp, print);
   }
 
   if (plans.length > 0) {
@@ -79,5 +94,5 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
     totalChunks = allChunks.length;
   }
 
-  return { files: plans.length, chunks: totalChunks, skipped };
+  return { files: plans.length, chunks: totalChunks, skipped, ...readErrors };
 }
