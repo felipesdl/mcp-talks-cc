@@ -14,6 +14,19 @@ HEALTH="${CACHE}/health.json"
 SESSIONS="${CACHE}/sessions"
 STALE_SECS=172800 # 48h sem ingest bem-sucedido = memória desatualizada
 
+# Path real da instalação (o hook é registrado com caminho absoluto pelo
+# install-hook.mjs). Entra no WARN, que passa por sed com | e vai pra JSON:
+# path com | & " \ cai num texto genérico em vez de quebrar a saída.
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
+case "$PROJECT_DIR" in
+  "$HOME"/*) PROJECT_HINT="~${PROJECT_DIR#"$HOME"}" ;;
+  *) PROJECT_HINT="$PROJECT_DIR" ;;
+esac
+case "$PROJECT_HINT" in
+  '' | *[\|\&\"\\]*) PROJECT_HINT="no diretorio onde o mcp-talks-cc foi instalado" ;;
+  *) PROJECT_HINT="em ${PROJECT_HINT}" ;;
+esac
+
 # ── 1) registro da sessão ───────────────────────────────────────────────────
 INPUT="$(cat 2>/dev/null || true)"
 SID="$(printf '%s' "$INPUT" | sed -nE 's/.*"session_id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -1)"
@@ -39,8 +52,9 @@ if [ -s "$HEALTH" ]; then
   [ -z "$LAST_OK" ] && LAST_OK=0
   AGE=$(( $(date +%s) - LAST_OK ))
   if [ "$LAST_OK" -eq 0 ] || [ "$AGE" -gt "$STALE_SECS" ]; then
-    DAYS=$(( AGE / 86400 ))
-    WARN="[ALERTA mcp-talks-cc] memoria DESATUALIZADA: ultimo ingest ok ha ${DAYS}d (status atual: ${STATUS}). Avise o user na primeira resposta e sugira rodar npm run ingest -- --source=all em ~/Documents/code/mcp-talks-cc. Resultados de search_memory nao cobrem conversas recentes. "
+    # lastOkEpoch=0 é "nunca", não "há 20 mil dias".
+    if [ "$LAST_OK" -eq 0 ]; then LAST_TXT="nunca teve ingest ok"; else LAST_TXT="ultimo ingest ok ha $(( AGE / 86400 ))d"; fi
+    WARN="[ALERTA mcp-talks-cc] memoria DESATUALIZADA: ${LAST_TXT} (status atual: ${STATUS}). Avise o user na primeira resposta e sugira rodar npm run ingest -- --source=all ${PROJECT_HINT}. Resultados de search_memory nao cobrem conversas recentes. "
   elif [ "$STATUS" != "ok" ]; then
     WARN="[ALERTA mcp-talks-cc] ultimo ingest terminou em status ${STATUS}; conferir ~/.cache/mcp-talks-cc/ingest.log. "
   fi

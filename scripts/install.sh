@@ -58,4 +58,6 @@ echo
 echo "  FALTA 1 PASSO MANUAL: cole o bloco de docs/CLAUDE.md.snippet.md"
 echo "  no seu ~/.claude/CLAUDE.md. Sem ele o server conecta mas o Claude"
 echo "  nao sabe quando buscar nem como ler confidence."
+echo "  Troque /ABSOLUTE/PATH/TO/mcp-talks-cc no snippet por:"
+echo "    ${PROJECT_DIR}"
 echo "================================================================"
