@@ -20,9 +20,14 @@ ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "$(ts) [session-ingest] $*" >> "$LOG"; }
 now_epoch() { date +%s; }
 
-# mtime portátil (BSD stat no macOS, GNU stat no Linux)
+# mtime portátil. GNU primeiro: no Linux `stat -f` é "filesystem status", joga
+# lixo no stdout antes de falhar e esse lixo quebrava a aritmética do caller.
+# No macOS `stat -c` falha limpo (sem stdout), então a ordem inversa é segura.
 mtime_of() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null)" || m="$(stat -f %m "$1" 2>/dev/null)" || m=0
+  case "$m" in '' | *[!0-9]*) m=0 ;; esac
+  echo "$m"
 }
 
 # health.json: status atual + epoch do último ok (preservado entre runs).
@@ -39,7 +44,15 @@ write_health() {
     mv "${HEALTH}.tmp" "$HEALTH" 2>/dev/null
 }
 
-neo4j_up() { nc -z localhost 7687 2>/dev/null; }
+# nc não vem em toda distro (Debian slim, Arch base). Sem fallback, ausência do
+# binário virava "neo4j-down" permanente com o banco de pé.
+neo4j_up() {
+  if command -v nc >/dev/null 2>&1; then
+    nc -z localhost 7687 2>/dev/null
+  else
+    (exec 3<>/dev/tcp/localhost/7687) 2>/dev/null
+  fi
+}
 
 # ── Neo4j: sobe em vez de desistir ──────────────────────────────────────────
 # O driver não tem connect-timeout, então checamos a porta Bolt antes.
@@ -114,17 +127,25 @@ fi
 
 # ── Ingest ──────────────────────────────────────────────────────────────────
 log "start (lock=${LOCK_HELD})"
-OUT="$(mktemp -t mcp-talks-ingest)"
+# Template com X explícito: `-t prefixo` puro é só BSD, o GNU sai com exit 1.
+OUT="$(mktemp "${TMPDIR:-/tmp}/mcp-talks-ingest.XXXXXX")" || OUT="${LOG_DIR}/ingest.out"
 npm run ingest -- --source=all > "$OUT" 2>&1
 code=$?
 cat "$OUT" >> "$LOG"
 # soma de `chunks: N` de todas as sources pra decidir se vale rebuild:similar
 new_chunks="$(sed -nE 's/.*chunks:[[:space:]]*([0-9]+).*/\1/p' "$OUT" | awk '{s+=$1} END {print s+0}')"
+# arquivo que sumiu (vanished) é esperado; failed é erro de leitura que não
+# derrubou o run mas precisa aparecer no health em vez de sumir em silêncio.
+read_failed="$(sed -nE 's/.*[^[:alpha:]]failed:[[:space:]]*([0-9]+).*/\1/p' "$OUT" | awk '{s+=$1} END {print s+0}')"
 rm -f "$OUT"
-log "done (exit $code, chunks novos: ${new_chunks})"
+log "done (exit $code, chunks novos: ${new_chunks}, leituras falhas: ${read_failed})"
 
 if [ "$code" -eq 0 ]; then
-  write_health "ok" "chunks=${new_chunks}"
+  if [ "$read_failed" -gt 0 ]; then
+    write_health "ok" "chunks=${new_chunks} read_failed=${read_failed} ver ingest.log"
+  else
+    write_health "ok" "chunks=${new_chunks}"
+  fi
 else
   write_health "failed" "ingest exit ${code}"
 fi
