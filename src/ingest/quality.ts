@@ -29,6 +29,11 @@ const WRAPPER_PATTERNS: RegExp[] = [
   /^\s*Lembrete: mcp-talks-cc.*$/gm,
   /^\[(?:memória|ALERTA) mcp-talks-cc[\s\S]*?$/gm,
   /^CAVEMAN MODE ACTIVE.*$/gm,
+  // o assistant repassando o aviso do primer pro user ("Antes de tudo, um aviso
+  // do mcp-talks-cc: tem uma proposta de tuning..."). Voltava como hit nº 1 de
+  // busca sobre o próprio MCP. Só a LINHA sai: o resto da mensagem é conteúdo.
+  /^.*\baviso do mcp-talks-cc\b.*$/gim,
+  /^.*\bproposta de tuning\b.*\b(?:esperando|pendente|aguardando)\b.*$/gim,
 ];
 
 /**
@@ -120,4 +125,40 @@ export function isLowValueText(stripped: string): boolean {
 export function prepareConversationText(raw: string): string | null {
   const stripped = stripWrappers(raw);
   return lowValueReason(stripped) === null ? stripped : null;
+}
+
+/** Tamanho do gist na saída brief das tools. ~40 tokens. */
+export const GIST_CHARS = 160;
+
+/**
+ * Resumo de 1 linha pra saída brief: o suficiente pro modelo decidir se expande.
+ *
+ * Tira wrapper, marcação markdown e a frase de anúncio do começo (a cauda de
+ * overlap do chunker costuma começar com "vou verificar X"), e corta em limite
+ * de palavra. Sem LLM e sem I/O: roda por hit no hot path.
+ */
+export function gistOf(text: string, max: number = GIST_CHARS): string {
+  let t = stripWrappers(text)
+    .replace(/```[\s\S]*?```/g, ' [código] ')
+    .replace(/^#+\s*/gm, '')
+    .replace(/\*\*|__/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Chunk que não é o primeiro da mensagem começa com a cauda de 150 chars do
+  // overlap, muitas vezes no meio de uma palavra ("iveCandidatesOnFreight`").
+  // Começo em minúscula = fragmento: pula até a primeira fronteira de frase.
+  if (/^[a-zà-ú`),.;]/.test(t)) {
+    const m = /[.!?:]\s+(?=\S)|\s-\s/.exec(t.slice(0, 220));
+    if (m && m.index + m[0].length < t.length - 20) t = t.slice(m.index + m[0].length);
+  }
+  // pula anúncios iniciais, mantendo pelo menos uma frase
+  for (let i = 0; i < 2; i++) {
+    const m = /^(.{10,200}?[.:!?])\s+(.+)$/.exec(t);
+    if (!m || !ANNOUNCEMENT_RE.test(m[1]!) || PAYLOAD_RE.test(m[1]!)) break;
+    t = m[2]!;
+  }
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const sp = cut.lastIndexOf(' ');
+  return (sp > max * 0.6 ? cut.slice(0, sp) : cut) + '…';
 }

@@ -17,9 +17,16 @@ import {
   RECALL_POOL_MAX,
   MMR_POOL_MULT,
   MMR_POOL_MAX,
+  META_PROJECTS,
+  META_PROJECT_DEMOTE,
+  FAST_RECALL_POOL,
+  DECISION_BOOST,
+  MAX_HITS_PER_SESSION,
+  FOCUS_DIVERSITY,
 } from '../tuning.ts';
 import { confidenceFromVec, getScoreCalibration } from '../scoreCalibration.ts';
-import { lexicalHints } from '../../ingest/quality.ts';
+import { gistOf, lexicalHints } from '../../ingest/quality.ts';
+import { day, fmtConf, projectName, shortId, withStructured } from '../output.ts';
 import { taskKeysFromText } from '../../ingest/entities.ts';
 import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
@@ -40,7 +47,7 @@ const inputSchema = {
     .optional()
     .describe('Number of results to return (default 8, learned via tuning).'),
   scope: z
-    .array(z.enum(['conversation', 'tool_output', 'plan', 'todo', 'task_memory']))
+    .array(z.enum(['conversation', 'plan', 'task_memory', 'decision']))
     .optional()
     .describe('Restrict to specific source kinds. Omit to search everything.'),
   project: z
@@ -65,6 +72,12 @@ const inputSchema = {
     .describe(
       'MMR lambda. 0 = max diversity (different sessions), 1 = pure relevance. Default 0.7. Use 0.3 for panorama, 0.9 to focus a single topic.',
     ),
+  detail: z
+    .enum(['brief', 'full'])
+    .optional()
+    .describe(
+      "Output size. 'brief' (default): 1 line per hit (~40 tokens) with a short id; call expand_hits(ids) for full text of the ones worth reading. 'full': whole snippets.",
+    ),
   hybrid: z
     .boolean()
     .default(true)
@@ -88,6 +101,8 @@ export interface SearchHit {
   neighbors: string[];
   parentLabel: string | null;
   parentKey: string | null;
+  /** Tasks (ON_TASK) da sessão do hit, no máx 2. */
+  tasks: string[];
 }
 
 /**
@@ -114,6 +129,12 @@ export const LITERAL_TOKEN_RE = new RegExp(
  * só pra extrair terminologia recorrente no profile (src/learning/profile.ts).
  */
 export const TERM_TOKEN_RE = /\b[a-zA-Zà-úÀ-Ú][A-Za-zà-úÀ-Ú0-9_]{4,}\b/g;
+
+export function isMetaProject(path: string | null | undefined): boolean {
+  if (!path) return false;
+  const name = path.split('/').filter(Boolean).pop();
+  return name !== undefined && META_PROJECTS.includes(name);
+}
 
 export function hasLiteralTokens(q: string): boolean {
   LITERAL_TOKEN_RE.lastIndex = 0;
@@ -236,8 +257,8 @@ function rrfScore(c: Pick<PreCandidate, 'vec_rank' | 'bm25_rank' | 'task_rank'>)
 /**
  * Relevância crua em [0,1], que é o que o MMR e o campo `score` consomem.
  *
- * Sem híbrido continua sendo o cosseno, igual antes. Com híbrido é o RRF
- * normalizado min-max DENTRO dos finalistas: o RRF cru vale ~0.03 no topo, e
+ * Cosseno (sem híbrido) ou RRF (com), sempre normalizado min-max DENTRO dos
+ * finalistas: o RRF cru vale ~0.03 no topo, e
  * nessa escala o termo de diversidade do MMR (`(1-lambda)*maxSim`, ~0.27)
  * engoliria a relevância por completo e a seleção degeneraria em diversidade
  * pura.
@@ -334,17 +355,29 @@ function mmrSelect(
   pool: Candidate[],
   lambda: number,
   k: number,
+  maxPerSession: number,
+  /** Sessões fora do teto: as da task que a query nomeia, onde o que se quer é profundidade. */
+  uncapped: Set<string>,
   relOf: (c: Candidate) => number,
   boostOf: (c: Candidate) => number,
 ): Candidate[] {
   const selected: Candidate[] = [];
   const remaining = [...pool];
+  const perSession = new Map<string, number>();
 
   while (selected.length < k && remaining.length > 0) {
-    let bestIdx = 0;
+    let bestIdx = -1;
     let bestScore = -Infinity;
     for (let i = 0; i < remaining.length; i++) {
       const c = remaining[i]!;
+      if (
+        maxPerSession > 0 &&
+        c.meta.sessionId &&
+        !uncapped.has(c.meta.sessionId) &&
+        (perSession.get(c.meta.sessionId) ?? 0) >= maxPerSession
+      ) {
+        continue;
+      }
       // boost multiplica SÓ o termo de relevância (ranking); o termo de
       // diversidade (maxSim) e o score reportado ficam crus.
       const rel = relOf(c) * boostOf(c);
@@ -358,7 +391,10 @@ function mmrSelect(
         bestIdx = i;
       }
     }
-    selected.push(remaining.splice(bestIdx, 1)[0]!);
+    if (bestIdx < 0) break; // só sobrou candidato de sessão já no teto
+    const pickedC = remaining.splice(bestIdx, 1)[0]!;
+    if (pickedC.meta.sessionId) perSession.set(pickedC.meta.sessionId, (perSession.get(pickedC.meta.sessionId) ?? 0) + 1);
+    selected.push(pickedC);
   }
   return selected;
 }
@@ -374,12 +410,25 @@ export interface SearchResult {
 export async function searchMemory(args: {
   query: string;
   k?: number;
-  scope?: ('conversation' | 'tool_output' | 'plan' | 'todo' | 'task_memory')[];
+  scope?: ('conversation' | 'plan' | 'task_memory' | 'decision')[];
   project?: string;
   projectStrict?: boolean;
   since?: string;
   diversity?: number;
   hybrid?: boolean;
+  /**
+   * Só uso interno (bench/probe), fora do inputSchema da tool. Simulam "estar
+   * no momento da busca": sem eles a própria sessão onde a query nasceu, que
+   * contém a resposta montada a partir da memória, volta como hit e o bench
+   * mede vazamento em vez de recall.
+   */
+  until?: string;
+  excludeSessions?: string[];
+  /**
+   * Caminho do hook de push: pool menor, sem retry fundo, sem kin. Precisa
+   * caber no orçamento de latência de um hook que roda a cada prompt.
+   */
+  fast?: boolean;
 }): Promise<SearchResult> {
   const tuning = getTuning();
   const k = args.k ?? tuning.k;
@@ -387,12 +436,15 @@ export async function searchMemory(args: {
   const hybrid = (args.hybrid ?? true) && hasLiteralTokens(args.query);
   // Estágio B: só os finalistas trazem `node.embedding` (1024 doubles) pro MMR
   // client-side, que era a maior parte do p90 de latência.
-  const mmrPool = Math.min(k * MMR_POOL_MULT, MMR_POOL_MAX);
+  const mmrPool = args.fast ? Math.min(k * MMR_POOL_MULT, 15) : Math.min(k * MMR_POOL_MULT, MMR_POOL_MAX);
 
   // project é soft boost por padrão (regras cruzam repos); hard filter só com projectStrict
   const projectFilter = args.projectStrict ? (args.project ?? null) : null;
   const nowMs = Date.now();
+  const callerIsMeta = isMetaProject(resolveCallerSession().project);
   const boostOf = (m: CandidateMeta): number =>
+    (!callerIsMeta && isMetaProject(m.project) ? META_PROJECT_DEMOTE : 1) *
+    (m.source === 'decision' ? DECISION_BOOST : 1) *
     (args.project && !args.projectStrict && m.project === args.project
       ? tuning.projectBoost
       : 1) *
@@ -419,6 +471,8 @@ export async function searchMemory(args: {
          WHERE ($scope IS NULL OR node.sourceKind IN $scope)
            AND ($project IS NULL OR node.projectPath = $project)
            AND ($since IS NULL OR node.timestamp >= $since)
+           AND ($until IS NULL OR node.timestamp <= $until)
+           AND ($excl IS NULL OR node.sessionId IS NULL OR NOT node.sessionId IN $excl)
          RETURN node.id AS id,
                 score AS vec_score,
                 node.sourceKind AS source,
@@ -434,6 +488,8 @@ export async function searchMemory(args: {
           scope: args.scope ?? null,
           project: projectFilter,
           since: args.since ?? null,
+          until: args.until ?? null,
+          excl: args.excludeSessions ?? null,
         },
       );
 
@@ -449,6 +505,8 @@ export async function searchMemory(args: {
              WHERE ($scope IS NULL OR node.sourceKind IN $scope)
                AND ($project IS NULL OR node.projectPath = $project)
                AND ($since IS NULL OR node.timestamp >= $since)
+               AND ($until IS NULL OR node.timestamp <= $until)
+               AND ($excl IS NULL OR node.sessionId IS NULL OR NOT node.sessionId IN $excl)
              RETURN node.id AS id,
                     score,
                     node.sourceKind AS source,
@@ -464,6 +522,8 @@ export async function searchMemory(args: {
               scope: args.scope ?? null,
               project: projectFilter,
               since: args.since ?? null,
+              until: args.until ?? null,
+              excl: args.excludeSessions ?? null,
             },
           );
           const rawScores = ftRes.records.map((r) => Number(r.get('score')));
@@ -509,6 +569,8 @@ export async function searchMemory(args: {
              AND ($scope IS NULL OR c.sourceKind IN $scope)
              AND ($project IS NULL OR c.projectPath = $project)
              AND ($since IS NULL OR c.timestamp >= $since)
+             AND ($until IS NULL OR c.timestamp <= $until)
+             AND ($excl IS NULL OR c.sessionId IS NULL OR NOT c.sessionId IN $excl)
            RETURN c.id AS id, c.sourceKind AS source, c.sessionId AS sessionId,
                   c.projectPath AS project, c.timestamp AS timestamp,
                   c.valueScore AS valueScore, c.role AS role
@@ -520,6 +582,8 @@ export async function searchMemory(args: {
             scope: args.scope ?? null,
             project: projectFilter,
             since: args.since ?? null,
+            until: args.until ?? null,
+            excl: args.excludeSessions ?? null,
           },
         );
         tr.records.forEach((r, i) => {
@@ -594,10 +658,10 @@ export async function searchMemory(args: {
       return out;
     };
 
-    let pool = await stageA(RECALL_POOL);
+    let pool = await stageA(args.fast ? FAST_RECALL_POOL : RECALL_POOL);
     // Post-filter apertado (scope/projectStrict/since) devolvia menos que k
     // mesmo com material de sobra no grafo: aprofunda uma vez.
-    if (pool.length < k && RECALL_POOL < RECALL_POOL_MAX) {
+    if (!args.fast && pool.length < k && RECALL_POOL < RECALL_POOL_MAX) {
       pool = await stageA(RECALL_POOL_MAX);
     }
     if (pool.length === 0) return empty;
@@ -668,17 +732,26 @@ export async function searchMemory(args: {
     // A relevância é normalizada em [0,1] sobre os finalistas pra ficar na
     // mesma escala do termo de diversidade (cosseno) dentro do MMR.
     const relRaw = candidates.map((c) => (hybrid ? rrfScore(c) : c.vec_score));
-    const relNorm = hybrid ? normalizeRelevance(relRaw) : relRaw;
+    // Normaliza SEMPRE, não só no híbrido. Com cosseno cru o spread dos
+    // finalistas é ~0.04, e os boosts multiplicam numa faixa 0.7-1.25
+    // (recência, projeto, demote): o boost atropelava a similaridade. Medido no
+    // bench:recall em 2026-09-29, o hit certo com o MAIOR vec (0.925) caía pro
+    // 8º lugar. Normalizando: r@8 81.1% -> 89.2%, MRR 0.626 -> 0.718, ruído
+    // 18.7% -> 11.1%.
+    const relNorm = normalizeRelevance(relRaw);
     const relMap = new Map<string, number>();
     candidates.forEach((c, i) => relMap.set(c.id, relNorm[i] ?? 0));
 
     const kin =
-      tuning.entityBoost > 1 ? await kinSessions(s, resolveCallerSession().sessionId) : new Set<string>();
+      !args.fast && tuning.entityBoost > 1 ? await kinSessions(s, resolveCallerSession().sessionId) : new Set<string>();
 
     const picked = mmrSelect(
       candidates,
       lambda,
       k,
+      lambda >= FOCUS_DIVERSITY ? 0 : MAX_HITS_PER_SESSION,
+      // medido: com teto nelas, narração no bench de task foi de 8.3% pra 24.2%
+      queryTaskSessions,
       (c) => relMap.get(c.id) ?? 0,
       (c) =>
         boostOf(c.meta) *
@@ -696,18 +769,22 @@ export async function searchMemory(args: {
        OPTIONAL MATCH (parent)-[:HAS_CHUNK]->(sib:Chunk)
        WHERE sib.id <> c.id AND abs(sib.ordinal - c.ordinal) <= 1
        WITH c, parent, collect(DISTINCT sib.text)[..2] AS neighbors
+       OPTIONAL MATCH (:Session { id: c.sessionId })-[:ON_TASK]->(t:Task)
+       WITH c, parent, neighbors, collect(DISTINCT t.key)[..2] AS tasks
        RETURN c.id AS id,
+              tasks,
               labels(parent)[0] AS parentLabel,
               coalesce(parent.uuid, parent.path, parent.id) AS parentKey,
               neighbors`,
       { ids },
     );
-    const ctxMap = new Map<string, { parentLabel: string; parentKey: string; neighbors: string[] }>();
+    const ctxMap = new Map<string, { parentLabel: string; parentKey: string; neighbors: string[]; tasks: string[] }>();
     for (const rec of ctxRes.records) {
       ctxMap.set(rec.get('id') as string, {
         parentLabel: rec.get('parentLabel'),
         parentKey: rec.get('parentKey'),
         neighbors: (rec.get('neighbors') as string[]) ?? [],
+        tasks: (rec.get('tasks') as string[]) ?? [],
       });
     }
 
@@ -731,6 +808,7 @@ export async function searchMemory(args: {
         neighbors: ctx?.neighbors ?? [],
         parentLabel: ctx?.parentLabel ?? null,
         parentKey: ctx?.parentKey ?? null,
+        tasks: ctx?.tasks ?? [],
       };
     });
 
@@ -743,6 +821,44 @@ export async function searchMemory(args: {
       calibrated: calibration?.ready === true,
     };
   });
+}
+
+/**
+ * Texto que o modelo lê. `brief` (default): 1 linha por hit, ~40 tokens, com o
+ * id curto que `expand_hits` aceita. `full`: snippet inteiro + vizinhos
+ * cortados, o formato antigo, pra quando o modelo já sabe que quer ler tudo.
+ */
+export function formatSearchResult(r: SearchResult, detail: 'brief' | 'full'): string {
+  const { hits, poolVecMedian, poolSize, calibrated } = r;
+  if (hits.length === 0) return 'sem resultado na memória indexada.';
+  if (detail === 'brief') {
+    const header =
+      `pool=${poolSize} vec_med=${poolVecMedian?.toFixed(3) ?? '-'}` +
+      (calibrated ? ' | cite pela conf' : ' | conf n/a (calibrando)') +
+      ' | expand_hits(ids) pra texto completo';
+    const lines = hits.map((h, i) => {
+      const where = h.source === 'plan' ? projectName(h.parentKey) : projectName(h.project);
+      const tasks = h.tasks.length > 0 ? ` ${h.tasks.join(',')}` : '';
+      return `[${i + 1}] conf=${fmtConf(h.confidence)} id=${shortId(h.id)} ${h.source} ${where} ${day(h.timestamp)}${tasks} | ${gistOf(h.snippet)}`;
+    });
+    return [header, ...lines].join('\n');
+  }
+  const header =
+    `pool: ${poolSize} candidatos, vec mediano=${poolVecMedian?.toFixed(3) ?? '-'}` +
+    (calibrated
+      ? ' | confidence = percentil histórico do vec (use isto pra decidir se cita)'
+      : ' | confidence indisponível (calibração ainda coletando amostras)');
+  const body = hits
+    .map((h, i) => {
+      const bm25 = h.bm25_score !== null ? ` bm25=${h.bm25_score.toFixed(3)}` : '';
+      const ctx =
+        h.neighbors.length > 0
+          ? `\n  context: ${h.neighbors.map((n) => n.slice(0, 100)).join(' | ')}`
+          : '';
+      return `[${i + 1}] conf=${fmtConf(h.confidence)} id=${shortId(h.id)} score=${h.score.toFixed(3)} vec=${h.vec_score.toFixed(3)}${bm25} source=${h.source} project=${h.project ?? '-'} sessionId=${h.sessionId ?? '-'} tasks=${h.tasks.join(',') || '-'} parent=${h.parentLabel}/${h.parentKey}\n${h.snippet}${ctx}`;
+    })
+    .join('\n\n');
+  return `${header}\n\n${body}`;
 }
 
 export function registerSearchMemoryTool(server: McpServer): void {
@@ -792,38 +908,16 @@ export function registerSearchMemoryTool(server: McpServer): void {
             bm25Score: h.bm25_score,
           })),
         });
-        const header =
-          `pool: ${poolSize} candidatos, vec mediano=${poolVecMedian?.toFixed(3) ?? '-'}` +
-          (calibrated
-            ? ' | confidence = percentil histórico do vec (use isto pra decidir se cita)'
-            : ' | confidence indisponível (calibração ainda coletando amostras)');
-        const body =
-          hits.length === 0
-            ? 'No matches in indexed memory.'
-            : hits
-                .map((h, i) => {
-                  const conf =
-                    h.confidence !== null ? h.confidence.toFixed(2) : 'n/a';
-                  const bm25 =
-                    h.bm25_score !== null ? ` bm25=${h.bm25_score.toFixed(3)}` : '';
-                  const ctx =
-                    h.neighbors.length > 0
-                      ? `\n  context: ${h.neighbors.map((n) => n.slice(0, 100)).join(' | ')}`
-                      : '';
-                  return `[${i + 1}] conf=${conf} score=${h.score.toFixed(3)} vec=${h.vec_score.toFixed(3)}${bm25} source=${h.source} project=${h.project ?? '-'} sessionId=${h.sessionId ?? '-'} parent=${h.parentLabel}/${h.parentKey}\n${h.snippet}${ctx}`;
-                })
-                .join('\n\n');
-        return {
-          content: [{ type: 'text', text: `${header}\n\n${body}` }],
-          structuredContent: { hits, poolVecMedian, poolSize, calibrated },
-        };
+        return withStructured(
+          { content: [{ type: 'text', text: formatSearchResult({ hits, poolVecMedian, poolSize, calibrated }, args.detail ?? 'brief') }] },
+          { hits, poolVecMedian, poolSize, calibrated },
+        );
       } catch (e) {
         const err = toToolError(e);
-        return {
-          isError: true,
-          content: [{ type: 'text', text: `search_memory ${err.errorType}: ${err.message}` }],
-          structuredContent: err,
-        };
+        return withStructured(
+          { isError: true, content: [{ type: 'text', text: `search_memory ${err.errorType}: ${err.message}` }] },
+          err,
+        );
       }
     },
   );

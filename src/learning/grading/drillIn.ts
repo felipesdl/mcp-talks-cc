@@ -9,7 +9,8 @@ export interface DrillInResult {
 
 /**
  * Sinal de drill-in (o mais inequívoco): depois da busca, o caller abriu o
- * transcript de uma sessão dos hits, ou expandiu um chunk retornado.
+ * transcript de uma sessão dos hits, pediu similares de um hit, ou expandiu
+ * hits com expand_hits (o caso comum desde a saída brief).
  */
 export function computeDrillIn(
   entry: QueryLogEntry,
@@ -27,8 +28,14 @@ export function computeDrillIn(
     if (e.tool === 'get_session_transcript' && e.refSessionId && hitSessions.has(e.refSessionId)) {
       for (const h of entry.hits) if (h.sessionId === e.refSessionId) credited.add(h.id);
     }
-    if (e.tool === 'find_similar_chunks' && e.refChunkId && hitIds.has(e.refChunkId)) {
-      credited.add(e.refChunkId);
+    // refChunkId pode vir como prefixo curto (saída brief), então casa por prefixo
+    if (e.tool === 'find_similar_chunks' && e.refChunkId) {
+      const ref = e.refChunkId;
+      for (const id of hitIds) if (id.startsWith(ref)) credited.add(id);
+    }
+    // expand_hits: o modelo escolheu ler o texto inteiro destes hits
+    if (e.tool === 'expand_hits' && e.refChunkIds) {
+      for (const id of e.refChunkIds) if (hitIds.has(id)) credited.add(id);
     }
   }
   return credited.size > 0

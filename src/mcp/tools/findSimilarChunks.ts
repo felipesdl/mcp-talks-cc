@@ -4,12 +4,15 @@ import { withSession } from '../../neo4j/driver.ts';
 import { toToolError } from '../../domain/errors.ts';
 import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
+import { resolveChunkIds } from '../chunkIds.ts';
+import { gistOf } from '../../ingest/quality.ts';
+import { fmtConf, projectName, shortId, withStructured } from '../output.ts';
 
 const inputSchema = {
   chunkId: z
     .string()
     .min(1)
-    .describe('Chunk id (typically obtained from a search_memory hit `id` field).'),
+    .describe('Chunk id from a search_memory hit (the 12-char short id is enough).'),
   k: z
     .number()
     .int()
@@ -24,7 +27,7 @@ const inputSchema = {
     .default(0.75)
     .describe('Minimum cosine score for an edge to be returned (default 0.75).'),
   scope: z
-    .array(z.enum(['conversation', 'tool_output', 'plan', 'todo', 'task_memory']))
+    .array(z.enum(['conversation', 'plan', 'task_memory']))
     .optional()
     .describe('Filter neighbors by sourceKind.'),
 };
@@ -44,11 +47,13 @@ async function findSimilarChunks(args: {
   chunkId: string;
   k?: number;
   minScore?: number;
-  scope?: ('conversation' | 'tool_output' | 'plan' | 'todo' | 'task_memory')[];
+  scope?: ('conversation' | 'plan' | 'task_memory')[];
 }): Promise<SimilarHit[]> {
   const k = args.k ?? 5;
   const minScore = args.minScore ?? 0.75;
   return withSession(async (s) => {
+    const [chunkId] = await resolveChunkIds(s, [args.chunkId]);
+    if (!chunkId) return [];
     const r = await s.run(
       `MATCH (src:Chunk { id: $chunkId })-[r:SIMILAR_TO]->(tgt:Chunk)
        WHERE r.score >= $minScore
@@ -63,7 +68,7 @@ async function findSimilarChunks(args: {
               labels(parent)[0] AS parentLabel,
               coalesce(parent.uuid, parent.path, parent.id) AS parentKey
        ORDER BY r.score DESC LIMIT toInteger($k)`,
-      { chunkId: args.chunkId, k, minScore, scope: args.scope ?? null },
+      { chunkId, k, minScore, scope: args.scope ?? null },
     );
     return r.records.map((rec) => ({
       id: rec.get('id'),
@@ -131,19 +136,16 @@ export function registerFindSimilarChunksTool(server: McpServer): void {
             : hits
                 .map(
                   (h, i) =>
-                    `[${i + 1}] score=${h.score.toFixed(3)} source=${h.source} project=${h.project ?? '-'} sessionId=${h.sessionId ?? '-'} parent=${h.parentLabel}/${h.parentKey}\n${h.snippet.slice(0, 400)}`,
+                    `[${i + 1}] sim=${fmtConf(h.score)} id=${shortId(h.id)} ${h.source} ${projectName(h.project)} | ${gistOf(h.snippet)}`,
                 )
-                .join('\n\n');
-        return { content: [{ type: 'text', text }], structuredContent: { hits } };
+                .join('\n');
+        return withStructured({ content: [{ type: 'text', text }] }, { hits });
       } catch (e) {
         const err = toToolError(e);
-        return {
-          isError: true,
-          content: [
-            { type: 'text', text: `find_similar_chunks ${err.errorType}: ${err.message}` },
-          ],
-          structuredContent: err,
-        };
+        return withStructured(
+          { isError: true, content: [{ type: 'text', text: `find_similar_chunks ${err.errorType}: ${err.message}` }] },
+          err,
+        );
       }
     },
   );

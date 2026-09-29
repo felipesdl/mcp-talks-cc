@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
 import { toToolError } from '../../domain/errors.ts';
+import { withStructured } from '../output.ts';
 
 const inputSchema = {
   project: z
@@ -97,10 +98,8 @@ export function registerListProjectActivityTool(server: McpServer): void {
       try {
         const a = await listProjectActivity(args);
         if (!a.found) {
-          return {
-            content: [{ type: 'text', text: `Project ${a.project} not indexed. ${a.hint ?? ''}` }],
-            structuredContent: a,
-          };
+          return withStructured({
+            content: [{ type: 'text', text: `Project ${a.project} not indexed. ${a.hint ?? ''}` }] }, a);
         }
         const text = [
           `Project: ${a.project}`,
@@ -111,16 +110,14 @@ export function registerListProjectActivityTool(server: McpServer): void {
           `First session: ${a.firstSession ?? '-'}`,
           `Last session:  ${a.lastSession ?? '-'}`,
         ].join('\n');
-        return { content: [{ type: 'text', text }], structuredContent: a };
+        return withStructured({ content: [{ type: 'text', text }] }, a);
       } catch (e) {
         const err = toToolError(e);
-        return {
+        return withStructured({
           isError: true,
           content: [
             { type: 'text', text: `list_project_activity ${err.errorType}: ${err.message}` },
-          ],
-          structuredContent: err,
-        };
+          ] }, err);
       }
     },
   );

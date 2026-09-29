@@ -1,4 +1,5 @@
-export type SourceKind = 'conversation' | 'tool_output' | 'plan' | 'todo' | 'task_memory';
+/** tool_output/todo existem só como flag interna do ingest (0 chunks hoje); decision vem do src/distill/. */
+export type SourceKind = 'conversation' | 'tool_output' | 'plan' | 'todo' | 'task_memory' | 'decision';
 
 export interface ProjectRecord {
   path: string;

@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
 import { toToolError } from '../../domain/errors.ts';
+import { withStructured } from '../output.ts';
 import { resolveCallerSession } from '../callerSession.ts';
 import { logQuery } from '../../learning/queryLog.ts';
 
@@ -114,10 +115,8 @@ export function registerGetSessionTranscriptTool(server: McpServer): void {
           refSessionId: args.sessionId,
         });
         if (!t.found) {
-          return {
-            content: [{ type: 'text', text: `Session ${t.sessionId} not found. ${t.hint ?? ''}` }],
-            structuredContent: t,
-          };
+          return withStructured({
+            content: [{ type: 'text', text: `Session ${t.sessionId} not found. ${t.hint ?? ''}` }] }, t);
         }
         const lines = [
           `Session: ${t.sessionId}`,
@@ -127,17 +126,13 @@ export function registerGetSessionTranscriptTool(server: McpServer): void {
           '',
           ...t.messages.map((m) => `--- ${m.role} @ ${m.timestamp}\n${m.text}`),
         ];
-        return {
-          content: [{ type: 'text', text: lines.join('\n') }],
-          structuredContent: t,
-        };
+        return withStructured({
+          content: [{ type: 'text', text: lines.join('\n') }] }, t);
       } catch (e) {
         const err = toToolError(e);
-        return {
+        return withStructured({
           isError: true,
-          content: [{ type: 'text', text: `get_session_transcript ${err.errorType}: ${err.message}` }],
-          structuredContent: err,
-        };
+          content: [{ type: 'text', text: `get_session_transcript ${err.errorType}: ${err.message}` }] }, err);
       }
     },
   );

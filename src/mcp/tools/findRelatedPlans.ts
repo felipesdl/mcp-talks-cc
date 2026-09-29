@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
 import { embed } from '../../embeddings/localEmbedder.ts';
 import { toToolError } from '../../domain/errors.ts';
+import { withStructured } from '../output.ts';
+import { gistOf } from '../../ingest/quality.ts';
 
 const inputSchema = {
   query: z.string().min(1).describe('What you are looking for in past plan documents.'),
@@ -127,17 +129,16 @@ export function registerFindRelatedPlansTool(server: McpServer): void {
             : hits
                 .map(
                   (h, i) =>
-                    `[${i + 1}] score=${h.score.toFixed(3)} vec=${h.vec_score.toFixed(3)}${h.bm25_score !== null ? ` bm25=${h.bm25_score.toFixed(3)}` : ''} ${h.slug}\n  path: ${h.path}\n  ${h.snippet.slice(0, 400)}`,
+                    `[${i + 1}] score=${h.score.toFixed(3)} ${h.slug} path=${h.path}\n  ${gistOf(h.snippet, 300)}`,
                 )
-                .join('\n\n');
-        return { content: [{ type: 'text', text }], structuredContent: { hits } };
+                .join('\n');
+        return withStructured({ content: [{ type: 'text', text }] }, { hits });
       } catch (e) {
         const err = toToolError(e);
-        return {
-          isError: true,
-          content: [{ type: 'text', text: `find_related_plans ${err.errorType}: ${err.message}` }],
-          structuredContent: err,
-        };
+        return withStructured(
+          { isError: true, content: [{ type: 'text', text: `find_related_plans ${err.errorType}: ${err.message}` }] },
+          err,
+        );
       }
     },
   );

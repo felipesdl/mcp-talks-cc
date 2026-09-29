@@ -64,6 +64,8 @@ export const TASK_RECALL_LIMIT = 120;
 export const RECALL_POOL = 500;
 /** Retry quando scope/project/since derrubam o pool abaixo de k (post-filter). */
 export const RECALL_POOL_MAX = 2000;
+/** Pool do caminho de push (hook por prompt): latência > recall fundo. */
+export const FAST_RECALL_POOL = 200;
 export const MMR_POOL_MULT = 5;
 export const MMR_POOL_MAX = 60;
 
@@ -72,6 +74,40 @@ export const MMR_POOL_MAX = 60;
 // Floor alto de propósito: memória velha ainda é o valor do produto.
 export const RECENCY_HALFLIFE_DAYS = 120;
 export const RECENCY_FLOOR = 0.75;
+
+/**
+ * Repos cujo assunto é o próprio sistema de memória. Conversa sobre o MCP
+ * (tuning, calibração, primer) é vocabulário parecido com qualquer pergunta
+ * sobre "memória/decisão/regra" e voltava no topo de busca feita de OUTRO repo:
+ * medido em 2026-09-29, a busca "objetivo do mcp-talks-cc..." trouxe o aviso de
+ * tuning repassado ao user como hit nº 1. Match por nome da pasta do projeto.
+ * Não se aplica quando quem busca está no próprio repo.
+ */
+/**
+ * Peso de chunk destilado (nó Decision, src/distill/). Fixo, não tunado: a
+ * regra é curta e autocontida por construção, e o grader ainda não tem sinal
+ * limpo pra aprender isso. Revisar pelo bench:recall, não pelo self-tune.
+ */
+export const DECISION_BOOST = Number(process.env.MCP_TALKS_DECISION_BOOST ?? 1.25);
+
+/**
+ * Teto de hits da MESMA sessão no top-k. O MMR diversifica por embedding, não
+ * por sessão: medido em 2026-09-29, "fila de espera contrato espelho" devolveu
+ * 8 de 8 hits da EDC-3291. Pra recall o que importa é cobrir sessões distintas,
+ * e o resto da sessão está a um expand_hits/get_session_transcript de distância.
+ *
+ * Medido no bench:recall (37 casos, sem decisions), teto 0 → 2 → 1:
+ *   r@8 73.0% → 75.7% → 81.1% | MRR 0.612 → 0.617 → 0.633 | tokens 463 → 435 → 412
+ * Refeito com relevância normalizada (mesmo dia): r@8 86.5% → 89.2% → 89.2% |
+ * MRR 0.699 → 0.706 → 0.716. Empate em recall, 1 ganha em MRR e tokens.
+ * Desligado quando o caller pede foco (diversity >= FOCUS_DIVERSITY).
+ * 0 = sem teto. Override por env só pro bench comparar valores.
+ */
+export const MAX_HITS_PER_SESSION = Number(process.env.MCP_TALKS_MAX_PER_SESSION ?? 1);
+export const FOCUS_DIVERSITY = 0.9;
+
+export const META_PROJECTS = ['mcp-talks-cc'];
+export const META_PROJECT_DEMOTE = 0.5;
 
 export const DEFAULT_TUNING: Tuning = {
   v: 1,
@@ -90,6 +126,11 @@ export const DEFAULT_TUNING: Tuning = {
 const RECHECK_MS = 60_000;
 
 let _tuning: Tuning = DEFAULT_TUNING;
+/** Só pro bench avaliar um candidate em processo, sem promover. null = normal. */
+let _override: Tuning | null = null;
+export function setTuningOverride(t: Tuning | null): void {
+  _override = t;
+}
 let _lastCheck = 0;
 let _lastMtimeMs = -1;
 
@@ -167,6 +208,7 @@ export function tuningEquals(a: Tuning, b: Tuning): boolean {
  * Ausente/corrupto → último valor bom ou defaults (== comportamento sem loop).
  */
 export function getTuning(): Tuning {
+  if (_override) return _override;
   const now = Date.now();
   if (now - _lastCheck < RECHECK_MS) return _tuning;
   _lastCheck = now;

@@ -91,16 +91,18 @@ chunks_text  ON  (c:Chunk) ON EACH [c.text]
   used by hybrid scoring in search_memory / find_related_plans / find_decisions
 
 ## Hybrid retrieval scoring
-When query has literal tokens (ABC-XXXX, file paths, identifiers >= 5 chars):
-  final_score = 0.7 * vec_cosine + 0.3 * bm25_normalized
-Otherwise vector-only. MMR (diversity param) diversifies top-k.
+BM25 only when the query has literal tokens (ABC-1234, path.ext, camelCase,
+snake_case, CONST_CASE, ACRONYM, 1.2.3). Recall pool = union of vector top-500,
+BM25 top-500 and chunks of sessions linked to a task named in the query.
+Ranking = RRF (k=60) over the lists x learned boosts, then MMR (diversity).
+Output is brief by default; expand_hits(ids) returns full text.
 
 ## sourceKind values on Chunk
 - conversation   — user/assistant message text
-- tool_output    — tool_result content (< 2000 chars)
 - plan           — ~/.claude/plans markdown
 - task_memory    — <project>/.claude/tasks/<TICKET>/*.md
-(Todo is stored as node, not embedded)
+- decision       — distilled decision/rule/gotcha (<=300 chars), parent node Decision
+(Todo is stored as node, not embedded; tool outputs are ToolCall nodes, not embedded)
 
 ## Useful Cypher
 

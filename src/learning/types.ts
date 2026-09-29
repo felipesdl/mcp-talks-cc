@@ -14,7 +14,7 @@ export interface QueryLogHit {
 export interface QueryLogEntry {
   v: 1;
   ts: string;
-  tool: 'search_memory' | 'get_session_transcript' | 'find_similar_chunks';
+  tool: 'search_memory' | 'get_session_transcript' | 'find_similar_chunks' | 'expand_hits' | 'push';
   sessionId: string | null; // sessão chamadora (resolvida via src/mcp/callerSession.ts)
   callerProject?: string | null; // cwd da sessão chamadora — NÃO confundir com o arg `project`
   query: string | null;
@@ -33,12 +33,14 @@ export interface QueryLogEntry {
   poolVecMedian?: number | null;
   refSessionId?: string | null; // get_session_transcript alvo
   refChunkId?: string | null; // find_similar_chunks origem
+  /** expand_hits: ids completos que o modelo escolheu ler. */
+  refChunkIds?: string[];
 }
 
 export const queryLogEntrySchema = z.object({
   v: z.literal(1),
   ts: z.string(),
-  tool: z.enum(['search_memory', 'get_session_transcript', 'find_similar_chunks']),
+  tool: z.enum(['search_memory', 'get_session_transcript', 'find_similar_chunks', 'expand_hits', 'push']),
   sessionId: z.string().nullable(),
   // optional: linhas gravadas antes deste campo existir precisam seguir válidas
   callerProject: z.string().nullable().optional(),
@@ -66,6 +68,7 @@ export const queryLogEntrySchema = z.object({
   poolVecMedian: z.number().nullable().optional(),
   refSessionId: z.string().nullable().optional(),
   refChunkId: z.string().nullable().optional(),
+  refChunkIds: z.array(z.string()).optional(),
 });
 
 // ── grades.jsonl ─────────────────────────────────────────────────────────────
@@ -155,9 +158,11 @@ export interface ScoreCalibration {
 
 /** Cortes de citação derivados da distribuição real. Ver learning/confidenceGate.ts. */
 export interface ConfidenceGate {
-  strong: number; // p75 da confidence do melhor hit por query
-  floor: number; // p25
-  nQueries: number; // tamanho da amostra (1 ponto por query gradada)
+  strong: number; // bench: precision >= 0.8 | fallback: p75 da confidence do melhor hit por query
+  floor: number; // bench: precision >= 0.5 | fallback: p25
+  nQueries: number; // tamanho da amostra
+  /** bench = derivado do gabarito (bench:recall); quota = percentil do top hit (fallback). */
+  source?: 'bench' | 'quota';
 }
 
 export interface Profile {
@@ -183,6 +188,10 @@ export interface Profile {
    * null = calibração de score não pronta.
    */
   confidenceGate?: ConfidenceGate | null;
+  /** Adoção e push (learning/usage.ts). Opcional: profile antigo segue válido. */
+  usage?: import('./usage.ts').UsageStats;
+  /** Decisions scope=cross (rule/gotcha) mais recentes, pro primer. */
+  crossRules?: Array<{ kind: string; text: string; repo: string | null }>;
 }
 
 // ── tuning.json / tuning.candidate.json ──────────────────────────────────────

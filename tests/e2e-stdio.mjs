@@ -7,7 +7,7 @@ const proc = spawn(
   {
     stdio: ['pipe', 'pipe', 'inherit'],
     // ver src/learning/queryLog.ts: busca de teste fora da calibração
-    env: { ...process.env, MCP_TALKS_DISABLE_QUERY_LOG: '1' },
+    env: { ...process.env, MCP_TALKS_DISABLE_QUERY_LOG: '1', MCP_TALKS_STRUCTURED: '1', MCP_TALKS_DISABLE_PUSH: '1' },
   },
 );
 

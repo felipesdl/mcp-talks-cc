@@ -13,7 +13,7 @@ export function registerRecallContextPrompt(server: McpServer): void {
           .string()
           .optional()
           .describe(
-            'Comma-separated subset: conversation,tool_output,plan,todo,task_memory. Vazio = tudo.',
+            'Comma-separated subset: conversation,plan,task_memory. Vazio = tudo.',
           ),
       },
     },
@@ -33,12 +33,12 @@ export function registerRecallContextPrompt(server: McpServer): void {
               type: 'text',
               text: `Antes de responder, chame search_memory({ query: "${query}", k: 8${scopeArg} }).
 
-Avalie hits:
-- score >= 0.75: contexto forte, cite snippet + sessionId no início da resposta
-- score 0.6-0.75: contexto fraco, use com cautela e mencione que recuperou da memória
-- score < 0.6 em todos hits: memória não cobre o assunto; avise e prossiga com conhecimento geral
+Saída vem brief (1 linha por hit). Decida pela \`conf\`, nunca pelo \`score\` (o score só ordena dentro da mesma busca):
+- conf >= gate forte do primer (fallback 0.90): contexto forte. Chame expand_hits só nos ids que vai usar e cite em 1 frase.
+- conf entre o piso e o forte: fraco. Só expande se for diretamente útil, e cite com cautela.
+- conf abaixo do piso (fallback 0.59) em todos, ou conf n/a: memória não cobre bem. Não cite, siga com conhecimento geral.
 
-Se algum hit tiver source=plan ou source=task_memory, considere expandir com find_related_plans / find_decisions / get_session_transcript antes de responder.`,
+Se o assunto mudar no meio da conversa, busque de novo: brief custa ~400 tokens.`,
             },
           },
         ],
