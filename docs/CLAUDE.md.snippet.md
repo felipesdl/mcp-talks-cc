@@ -12,15 +12,31 @@ literal, então funciona pra qualquer prefixo.
 
 ## Memória cross-conversa (MCP `mcp-talks-cc`)
 
-O server MCP se chama `mcp-talks-cc` (tools no formato `mcp__mcp-talks-cc__*`). Sempre referir a ele por esse nome, nunca "memory". MCP local indexa conversas Claude Code passadas, plans, todos e task memory em Neo4j com busca vetorial. Tools: `search_memory`, `get_session_transcript`, `find_related_plans`, `find_decisions`, `list_project_activity`. Resources: `memory://stats`, `memory://schema`, `memory://profile` (perfil aprendido pelo self-tune; use pra responder "oq vc aprendeu de mim").
+O server MCP se chama `mcp-talks-cc` (tools no formato `mcp__mcp-talks-cc__*`). Sempre referir a ele por esse nome, nunca "memory". MCP local indexa conversas Claude Code passadas, plans, todos e task memory em Neo4j com busca vetorial. Tools: `search_memory`, `expand_hits`, `get_session_transcript`, `find_related_plans`, `find_decisions`, `list_project_activity`. Resources: `memory://stats`, `memory://schema`, `memory://profile` (perfil aprendido pelo self-tune; use pra responder "oq vc aprendeu de mim").
 
 ### Quando consultar (regra firme)
 
 Antes de responder sobre decisão passada, abordagem já discutida, ou contexto de task/projeto: **busca primeiro com `search_memory`, só então responde**. Não é opcional nesses casos.
 
+**Busca de novo no meio da conversa**, não só no começo. Gatilhos:
+- o assunto mudou (outra feature, outro fluxo, outro repo);
+- vai tomar decisão de design ou escolher entre abordagens;
+- apareceu um erro/comportamento que parece já visto;
+- vai mexer em arquivo/módulo que não abriu ainda nesta conversa;
+- o user referiu o passado ("como fizemos", "aquela vez", "já discutimos").
+
+2-3 buscas por conversa é o esperado. A saída é brief (1 linha por hit, ~400 tokens com k=8), então re-buscar é barato. Leia texto completo só do que for usar, com `expand_hits({ ids })` (o id curto de 12 chars basta).
+
 Exceções (não buscar): pergunta trivial/casual, sintaxe genérica de linguagem/framework, assunto claramente novo que nunca passou pelos projetos.
 
-No início de cada sessão pode vir um primer `[memória mcp-talks-cc ...]` com projetos quentes, temas e buscas de alto valor. Se a pergunta bate com tema do primer, é sinal forte de buscar. O primer é só índice: pra detalhe, sempre `search_memory`.
+No início de cada sessão pode vir um primer `[memória mcp-talks-cc ...]` com projetos quentes, temas, buscas de alto valor e o **gate de citação vigente**. Se a pergunta bate com tema do primer, é sinal forte de buscar. O primer é só índice: pra detalhe, sempre `search_memory`.
+
+### Ponteiros automáticos (push)
+
+Hooks podem injetar 1 linha `[memória mcp-talks-cc] talvez relevante: id=... conf=... | gist` no prompt, ou `[memória mcp-talks-cc] <arquivo> já foi alterado em: <tasks>` ao abrir arquivo. É **sinal, não resposta**: só passou no gate de similaridade.
+- Se o gist parece útil pro que está fazendo, chame `expand_hits` com o id antes de usar. Nunca cite ponteiro sem ler.
+- Se não parece útil, ignore em silêncio. Não comente o ponteiro com o user.
+- Ponteiro de arquivo: se a task citada tem a ver com a mudança atual, vale `search_memory` com o nome do arquivo ou da task.
 
 ### Fluxo de análise de task do Jira
 
@@ -39,26 +55,27 @@ Quando o user pedir "analise KEY-1234" (ou variações tipo "vamos mexer na KEY-
 
 ### Como ler os números do `search_memory`
 
-Cada hit vem com `conf=` e `score=`. **São coisas diferentes:**
+Cada hit vem com `conf=` (e `score=` no `detail: 'full'`). **São coisas diferentes:**
 
 - `confidence` (0..1): percentil do hit contra a distribuição histórica de similaridade. `conf=0.90` significa "melhor que 90% dos hits que essa busca normalmente devolve". É comparável entre queries, então **é o único número que decide se cita**. `null` = calibração local ainda sem amostra suficiente.
 - `score`: fusão vetor + BM25, serve só pra ordenar dentro da MESMA query. Não é comparável entre queries e não tem corte absoluto útil: o embedder (bge-m3) devolve cosseno entre 0.86 e 0.91 pra praticamente qualquer coisa. Cortar score em 0.70 aprova 100% dos hits, inclusive lixo.
-- O cabeçalho traz `pool: N candidatos, vec mediano=X`: é o piso de similaridade daquela busca. Hit perto da mediana do pool é ruído.
-- **`FORTE` e `PISO` não são constantes, são percentis, e se movem.** São o p75 e o p25 da confidence do MELHOR hit por query, sobre uma amostra de 1 ponto por query gradada. Amostra pequena significa deriva real: número cravado no CLAUDE.md envelhece em dias.
-- **Fonte dos valores vigentes:** a linha `sugestão de gate pro CLAUDE.md` em `~/.cache/mcp-talks-cc/tuning-rationale.md`, seção "score / confidence". Ela é regerada a cada sessão pelo self-tune. Leia ela antes de citar memória (1 leitura por sessão basta, o valor serve pra todas as buscas daquela sessão).
-- **Fallback**, quando o arquivo não existe, a seção não está lá, ou a busca devolve `confidence: null` (`calibrated: false`): `FORTE = 0.90`, `PISO = 0.59`, e todo o meio é fraco. Com `confidence: null` nenhum hit pode ser tratado como forte, independente do score.
+- O cabeçalho traz `pool=N vec_med=X`: é o piso de similaridade daquela busca. Hit perto da mediana do pool é ruído.
+- **`FORTE` e `PISO` não são constantes.** Vêm do gabarito de recall (`npm run bench:recall`): FORTE é a menor confidence em que 80% dos hits são relevantes de verdade, PISO a de 50%. Sem bench recente, cai pra p75/p25 do melhor hit por query, que é cota e deriva com o volume.
+- **Fonte dos valores vigentes:** a linha `gate de citação desta sessão` do primer. Use o valor de lá, não um lembrado.
+- **Fallback**, quando o primer não traz o gate ou a busca devolve `conf n/a`: `FORTE = 0.90`, `PISO = 0.59`, e todo o meio é fraco. Com `conf n/a` nenhum hit pode ser tratado como forte, independente do score.
 
 ### Anti-padrões
 
 - Não chame `search_memory` para cada palavra. Tópicos abstratos (`"feature flag pattern"`) recupera melhor que palavras isoladas (`"flag"`).
 - Não cole snippets crus da memória na resposta. Resuma em 1 frase.
+- Não use `detail: 'full'` por padrão: brief + `expand_hits` no que importa gasta uma fração do contexto.
 - Se `memory://stats` mostrar Chunk < 100, o MCP está vazio/quebrado — avise o user e pule busca de memória.
 - Tópicos genéricos ("typescript", "react") trazem ruído. Prefira combinar com domínio: "typescript zod validation form".
 
 ### Hybrid retrieval & diversidade
 
 - `search_memory` é hybrid (vector + BM25 fulltext), mas o BM25 **só liga com token literal de verdade**: `KEY-1234`, path com extensão, camelCase (`useEffect`), snake_case, CONST_CASE, sigla (`MCP`) ou versão (`5.26`). Pergunta em prosa roda vetor puro, e isso é o certo. Passe a query natural, não tente truncar.
-- Parâmetro `diversity` (0..1, default 0.7) controla MMR. Use `0.3` quando quiser variedade ("panorama do tema X em todas conversas"), `0.9` quando quiser foco em 1 tópico ("aprofunde decisão Y").
+- Parâmetro `diversity` (0..1, default 0.7) controla MMR. Use `0.3` quando quiser variedade ("panorama do tema X em todas conversas"), `0.9` quando quiser foco em 1 tópico ("aprofunde decisão Y"). Por padrão vem no máx 1 hit por sessão (cobre mais conversas); `diversity >= 0.9` tira esse teto.
 - Pra "mostre outras conversas parecidas a esta", use `find_similar_chunks({ chunkId, k: 5 })` em vez de nova `search_memory`. Não re-embeda — usa edges SIMILAR_TO precomputadas (~10ms).
 
 ### Ingest: automático, com alarme

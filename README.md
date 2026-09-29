@@ -52,7 +52,7 @@ npm run db:stats
 | `todos` | `~/.claude/todos/*.json` | `Todo` |
 | `tasks` | `<project>/.claude/tasks/<TICKET>-*/*.md` | `Project`, `TaskMemoryDoc`, `Chunk` |
 
-`Chunk.sourceKind`: `conversation` (msgs user/assistant) | `tool_output` (tool_result <2000 chars) | `plan` | `task_memory`.
+`Chunk.sourceKind`: `conversation` (msgs user/assistant) | `plan` | `task_memory` | `decision` (destilado, ver [Distilação](#distilação)). Saída de ferramenta fica como nó `ToolCall`, sem embedding.
 
 Ingestão é **incremental** — `~/.cache/mcp-talks-cc/checkpoint.json` guarda `mtime + sha256` por arquivo. Re-rodar `npm run ingest` pula arquivos inalterados. Use `--force` pra reingerir tudo.
 
@@ -92,6 +92,10 @@ npm run self-tune -- --regrade-from=all   # re-grada o query-log inteiro (usar q
 npm run self-tune:accept                  # promove tuning.candidate.json -> tuning.json
 npm run self-tune:reject                  # recusa o candidate e para de cobrar accept
 npm run backfill:message-text             # repara Message.text sem re-embedar
+npm run calibrate:probe                   # CDF de confidence por replay das queries reais (não depende de tráfego recente)
+npm run eval:candidates                   # candidatos pro gabarito de recall
+npm run bench:recall                      # recall@k/MRR/tokens contra o gabarito, publica o gate
+npm run distill -- --limit=10             # destila sessões fechadas em nós Decision
 ```
 
 `self-tune:reject` é a contrapartida do accept. O self-tune regenera o candidate a cada
@@ -105,10 +109,11 @@ proposta diferente volta a cobrar accept, e um accept posterior limpa o registro
 
 | Tool | Para que serve |
 |---|---|
-| `search_memory(query, k?, scope?, project?, since?)` | Busca semântica em todo corpus. `scope` aceita `conversation\|tool_output\|plan\|todo\|task_memory` |
+| `search_memory(query, k?, scope?, project?, since?, diversity?, detail?)` | Busca híbrida em todo corpus. Saída **brief** por default (1 linha por hit, ~400 tokens com k=8); `detail: 'full'` traz os snippets. No máx 1 hit por sessão (`diversity >= 0.9` tira o teto). `scope` aceita `conversation\|plan\|task_memory\|decision` |
+| `expand_hits(ids, neighbors?)` | Texto completo dos hits escolhidos (id curto de 12 chars basta). É o 2º estágio da saída brief e o sinal de uso mais limpo pro grader |
 | `get_session_transcript(sessionId, limit?)` | Transcript completo de uma sessão. Retorna `found: false` se sessionId não existe |
 | `find_related_plans(query, k?)` | Restrita a `Plan` (~/.claude/plans/*.md) |
-| `find_decisions(query, taskId?, k?)` | Sem `taskId`: só decisions/learnings. Com `taskId`: todos os kinds da task |
+| `find_decisions(query, taskId?, k?)` | Decisões/regras/gotchas destilados (nós `Decision`) + task memory. Com `taskId`: as decisões daquela task |
 | `list_project_activity(project, since?)` | Estatísticas por projeto (Cypher puro, sem embed). Retorna `found: false` se project não existe |
 
 Prompts:
@@ -118,6 +123,35 @@ Prompts:
 Resources:
 - `memory://stats` — counts por label
 - `memory://schema` — referência: nodes, edges, vector index, Cypher exemplos
+
+Por que brief: o Claude Code entrega `structuredContent` ao modelo como JSON quando ele existe. Com k=5 isso era ~6.5KB (~1.8k tokens) por busca, e com esse preço o modelo não re-busca no meio da conversa. `structuredContent` agora só sai com `MCP_TALKS_STRUCTURED=1` (a suite liga).
+
+## Push: memória sem o modelo pedir
+
+Dois hooks síncronos (instalados pelo `install-hook.mjs`) mandam o contexto pro MCP server já quente via unix socket (`~/.cache/mcp-talks-cc/sock/<pid>.sock`) e injetam **no máximo 1 linha**:
+
+- `UserPromptSubmit` → `push-recall.sh prompt`: busca rápida (pool 200, top 3) no prompt; se um hit passa no gate (conf >= FORTE, margem acima do p75, não é narração, sessão ainda não citada), vira `[memória mcp-talks-cc] talvez relevante: id=... | gist`. Senão, nada (0 token).
+- `PostToolUse` (Read/Edit/Write) → `push-recall.sh file`: só Cypher, sem embedding. Quais tasks já alteraram aquele arquivo e a decisão destilada ligada a ele.
+
+Dedup por sessão e teto de 8 ponteiros. Fail-open: sem server vivo, sem curl ou estourando ~850ms, sai vazio. `MCP_TALKS_DISABLE_PUSH=1` no server desliga o socket. Medido: ~120-470ms com o server quente.
+
+## Distilação
+
+`npm run distill -- [--limit=10] [--session=<id>] [--dry-run]`: de cada sessão fechada (sem atividade há 2h, com 3+ falas de entrega), o `claude -p` headless com Haiku extrai até 6 itens `decision`/`rule`/`gotcha` de ≤300 chars, autocontidos. Viram nó `Decision` (ligado a `Session`, `Task` e `File`) + Chunk `sourceKind: 'decision'` no mesmo índice, com boost fixo de 1.25.
+
+- A chamada roda sem tools, sem MCP, sem settings de usuário (sem hooks) e sem persistir sessão, pra não virar transcript indexado nem disparar o SessionStart de novo (`MCP_TALKS_IN_DISTILL=1` é a segunda guarda).
+- O hook de ingest destila até `MCP_TALKS_DISTILL_PER_RUN` sessões por SessionStart (default 5, 0 desliga), em duas filas: as recentes (últimos 7 dias) e mais `MCP_TALKS_DISTILL_BACKLOG_PER_RUN` do backlog (default 3, da mais antiga pra mais nova, pra não mexer no que está em uso). Backfill de uma vez: `npm run distill -- --limit=N --oldest-first`. Custo medido: ~20-40s e ~10k tokens de Haiku por sessão.
+- Incremental por `Session.distillVersion`; subir `DISTILL_VERSION` reprocessa.
+
+## Medição: gabarito de recall
+
+`bench:task-recall` só prova o plumbing de `EDC-XXXX` → sessão. O juiz de ranking é `npm run bench:recall`, sobre um gabarito em `~/.cache/mcp-talks-cc/recall-eval.jsonl` (**fora do repo**: é feito das suas queries e sessões reais).
+
+1. `npm run eval:candidates` lista, pra cada query real do query-log, as sessões candidatas (ranker + task nomeada), rodando "no momento" da query.
+2. Marque quais sessões respondem de fato (à mão ou com um agente + revisão) no formato `{id, query, ts, callerSession, project, kind, expect: {sessionIds, planPaths}}`.
+3. `npm run bench:recall` dá recall@3/@8, MRR, ruído, tokens por busca e publica o gate de citação (`bench-gate.json`: FORTE = precision 0.8, PISO = 0.5). Flags de A/B: `--tuning=<file>`, `--exclude-kinds=decision`, `MCP_TALKS_MAX_PER_SESSION=n`.
+
+Com gabarito presente, o self-tune só cobra accept de um candidate que não piore recall nem MRR.
 
 ## Registro no Claude Code
 
@@ -178,6 +212,9 @@ No fim imprime onde fica o log e como verificar (`npm run db:stats`, `/mcp`).
 (TaskMemoryDoc)-[:HAS_CHUNK]->(Chunk)
 (Project)-[:HAS_TASK_MEMORY]->(TaskMemoryDoc)
 (Session)-[:HAS_TODO]->(Todo)               ← linked via sessionId in filename
+(Session)-[:ON_TASK]->(Task)  (Session)-[:WROTE|READ]->(File)   ← build:entities
+(Decision)-[:FROM_SESSION]->(Session)  (Decision)-[:ON_TASK]->(Task)
+(Decision)-[:ABOUT]->(File)  (Decision)-[:HAS_CHUNK]->(Chunk {sourceKind: 'decision'})
 ```
 
 Vector index `chunks_embedding`: `Chunk.embedding` (1024d cosine).
