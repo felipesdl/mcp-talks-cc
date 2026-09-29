@@ -8,11 +8,13 @@ import { registerFindRelatedPlansTool } from './tools/findRelatedPlans.ts';
 import { registerFindDecisionsTool } from './tools/findDecisions.ts';
 import { registerListProjectActivityTool } from './tools/listProjectActivity.ts';
 import { registerFindSimilarChunksTool } from './tools/findSimilarChunks.ts';
+import { registerExpandHitsTool } from './tools/expandHits.ts';
 import { registerRecallContextPrompt } from './prompts/recallContext.ts';
 import { registerExtractDecisionPrompt } from './prompts/extractDecision.ts';
 import { registerStatsResource } from './resources/stats.ts';
 import { registerSchemaResource } from './resources/schema.ts';
 import { registerProfileResource } from './resources/profile.ts';
+import { startWarmSocket } from './warmSocket.ts';
 
 const server = new McpServer({
   name: 'mcp-talks-cc',
@@ -25,6 +27,7 @@ registerFindRelatedPlansTool(server);
 registerFindDecisionsTool(server);
 registerListProjectActivityTool(server);
 registerFindSimilarChunksTool(server);
+registerExpandHitsTool(server);
 
 registerRecallContextPrompt(server);
 registerExtractDecisionPrompt(server);
@@ -40,6 +43,17 @@ console.error('[mcp] mcp-talks-cc server connected (stdio)');
 // Must NOT block server.connect above: the bge-m3 cold load is ~30-60s and
 // would stall the MCP initialize handshake, making the client time out.
 void getEmbedder().catch((e) => console.error('[mcp] embedder preload failed:', e));
+
+// Socket local pros hooks de push (UserPromptSubmit/PostToolUse). Desligável
+// com MCP_TALKS_DISABLE_PUSH=1 (a suite desliga).
+if (process.env.MCP_TALKS_DISABLE_PUSH !== '1') startWarmSocket();
+
+// Claude Code fecha o stdin quando a sessão acaba: sem isto o driver do Neo4j
+// seguraria o processo vivo e o socket ficaria órfão.
+process.stdin.on('close', async () => {
+  await closeDriver().catch(() => {});
+  process.exit(0);
+});
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, async () => {

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Instala (idempotente) os hooks SessionStart do mcp-talks-cc:
-//   1. session-ingest.sh  (async)    — auto-ingest incremental + self-tune
-//   2. session-primer.sh  (síncrono) — injeta primer aprendido como additionalContext
+// Instala (idempotente) os hooks do mcp-talks-cc:
+//   1. SessionStart     session-ingest.sh (async): auto-ingest incremental + self-tune
+//   2. SessionStart     session-primer.sh (síncrono): injeta primer aprendido
+//   3. UserPromptSubmit push-recall.sh prompt: ponteiro de memória por prompt
+//   4. PostToolUse      push-recall.sh file (Read|Edit|Write): histórico do arquivo
 // Faz merge em ~/.claude/settings.json SEM sobrescrever hooks existentes.
 // Backup em settings.json.bak antes de escrever; valida JSON antes de salvar.
 import { readFileSync, writeFileSync, existsSync, copyFileSync } from 'node:fs';
@@ -14,9 +16,13 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 
 // marker = nome do script; idempotência procura por ele no command.
 // session-primer NÃO leva async: o stdout precisa ser capturado pelo Claude Code.
+// Os de push são síncronos (o stdout vira contexto) e têm timeout curto: o
+// script já é fail-open, o timeout é a segunda rede.
 const HOOKS = [
-  { marker: 'session-ingest.sh', extra: { async: true } },
-  { marker: 'session-primer.sh', extra: {} },
+  { event: 'SessionStart', marker: 'session-ingest.sh', script: 'session-ingest.sh', matcher: '.*', extra: { async: true } },
+  { event: 'SessionStart', marker: 'session-primer.sh', script: 'session-primer.sh', matcher: '.*', extra: {} },
+  { event: 'UserPromptSubmit', marker: 'push-recall.sh prompt', script: 'push-recall.sh', args: ' prompt', extra: { timeout: 3 } },
+  { event: 'PostToolUse', marker: 'push-recall.sh file', script: 'push-recall.sh', args: ' file', matcher: 'Read|Edit|Write|MultiEdit', extra: { timeout: 3 } },
 ];
 
 function load() {
@@ -32,20 +38,20 @@ function load() {
 
 const settings = load();
 settings.hooks ??= {};
-settings.hooks.SessionStart ??= [];
 
 let added = 0;
-for (const { marker, extra } of HOOKS) {
-  const already = settings.hooks.SessionStart.some((entry) =>
+for (const { event, marker, script, args = '', matcher, extra } of HOOKS) {
+  settings.hooks[event] ??= [];
+  const already = settings.hooks[event].some((entry) =>
     (entry.hooks ?? []).some((h) => typeof h.command === 'string' && h.command.includes(marker)),
   );
   if (already) {
     console.log(`[install-hook] ${marker} já presente, pulando.`);
     continue;
   }
-  const command = `bash ${resolve(scriptDir, marker)}`;
-  settings.hooks.SessionStart.push({
-    matcher: '.*',
+  const command = `bash ${resolve(scriptDir, script)}${args}`;
+  settings.hooks[event].push({
+    ...(matcher ? { matcher } : {}),
     hooks: [{ type: 'command', command, ...extra }],
   });
   console.log(`[install-hook] registrando: ${command}`);
@@ -63,4 +69,4 @@ JSON.parse(out);
 
 if (existsSync(SETTINGS)) copyFileSync(SETTINGS, `${SETTINGS}.bak`);
 writeFileSync(SETTINGS, out);
-console.log(`[install-hook] ${added} hook(s) SessionStart instalado(s). Backup: ${SETTINGS}.bak`);
+console.log(`[install-hook] ${added} hook(s) instalado(s). Backup: ${SETTINGS}.bak`);

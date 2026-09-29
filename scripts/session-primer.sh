@@ -8,6 +8,9 @@
 # Puro bash, sem Node/Neo4j: o primer.json já vem pré-escapado do builder JS.
 set -u
 
+# claude -p da distilação não recebe primer nem push
+[ "${MCP_TALKS_IN_DISTILL:-}" = "1" ] && exit 0
+
 CACHE="${HOME}/.cache/mcp-talks-cc"
 PRIMER="${CACHE}/primer.json"
 HEALTH="${CACHE}/health.json"

@@ -32,10 +32,11 @@ describe('search_memory tool', () => {
     await client.close();
   });
 
-  it('lists 6 tools', async () => {
+  it('lists 7 tools', async () => {
     const r = await client.listTools();
     const names = r.tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
+      'expand_hits',
       'find_decisions',
       'find_related_plans',
       'find_similar_chunks',
@@ -140,6 +141,26 @@ describe('search_memory tool', () => {
     for (const h of soft.structuredContent.hits) {
       assert.ok(h.score <= 1.000001, 'reported score must stay raw (no boost inflation)');
     }
+  });
+
+  it('brief é o default e cabe no orçamento; expand_hits resolve o id curto', async () => {
+    const r = (await client.callTool({
+      name: 'search_memory',
+      arguments: { query: 'neo4j MCP', k: 8 },
+    })) as unknown as SearchResult & { content: Array<{ text: string }> };
+    const text = r.content[0]!.text;
+    const lines = text.split('\n');
+    // header + 1 linha por hit, nada de snippet inteiro
+    assert.equal(lines.length, 1 + r.structuredContent.hits.length);
+    assert.ok(text.length < 8 * 260, `brief estourou: ${text.length} chars`);
+    const short = /id=([0-9a-f]{12})/.exec(lines[1] ?? '')?.[1];
+    if (!short) return;
+    const ex = (await client.callTool({
+      name: 'expand_hits',
+      arguments: { ids: [short] },
+    })) as unknown as { structuredContent: { hits: Array<{ id: string }> } };
+    assert.equal(ex.structuredContent.hits.length, 1);
+    assert.ok(ex.structuredContent.hits[0]!.id.startsWith(short));
   });
 
   it('rejects empty query (Zod or isError)', async () => {
