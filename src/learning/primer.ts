@@ -49,7 +49,14 @@ export function buildPrimer(
   if (profile.recurringTopics.length > 0) {
     lines.push(`temas recorrentes: ${profile.recurringTopics.slice(0, 6).join(', ')}`);
   }
-  if (profile.recentHighValue.length > 0) {
+  // Regra destilada que vale entre repos é o que mais rende por token no início
+  // da sessão: autocontida, sem precisar buscar. Gist de query só como fallback.
+  if (profile.crossRules && profile.crossRules.length > 0) {
+    lines.push('regras destiladas (valem entre repos; find_decisions pra mais):');
+    for (const r of profile.crossRules.slice(0, 4)) {
+      lines.push(`- [${r.kind}] ${r.text.length > 140 ? r.text.slice(0, 139) + '…' : r.text} (${r.repo ?? '-'})`);
+    }
+  } else if (profile.recentHighValue.length > 0) {
     lines.push('buscas de alto valor recentes:');
     for (const hv of profile.recentHighValue.slice(0, 3)) {
       lines.push(`- "${hv.gist}" (${hv.when}, ${hv.ref})`);
@@ -63,7 +70,9 @@ export function buildPrimer(
   if (gate) {
     lines.push(
       `gate de citação desta sessão: forte >= ${gate.strong.toFixed(2)}, ignorar < ${gate.floor.toFixed(2)} ` +
-        `(p75/p25 de ${gate.nQueries} queries; deriva com o volume, use este valor e não um lembrado).`,
+        (gate.source === 'bench'
+          ? `(precision 0.8/0.5 no gabarito de ${gate.nQueries} casos; use este valor e não um lembrado).`
+          : `(p75/p25 de ${gate.nQueries} queries; deriva com o volume, use este valor e não um lembrado).`),
     );
   } else {
     lines.push(

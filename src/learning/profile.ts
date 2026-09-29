@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import { LITERAL_TOKEN_RE, TERM_TOKEN_RE } from '../mcp/tools/searchMemory.ts';
-import { suggestGate } from './confidenceGate.ts';
+import { benchGate, suggestGate } from './confidenceGate.ts';
 import type { Grade, Profile, QueryLogEntry, ScoreCalibration } from './types.ts';
 
 const STOPWORDS = new Set([
@@ -194,6 +194,6 @@ export function buildProfile(
       meanUtility,
       healthy: gradedCount === 0 || meanUtility > 0.2,
     },
-    confidenceGate: suggestGate(graded, scoreCalibration),
+    confidenceGate: suggestGate(graded, scoreCalibration, benchGate()),
   };
 }

@@ -1,5 +1,5 @@
 import { confidenceFromVec } from '../mcp/scoreCalibration.ts';
-import { pct, suggestGate } from './confidenceGate.ts';
+import { benchGate, pct, suggestGate } from './confidenceGate.ts';
 import { MIN_ECHO_SAMPLES, MIN_SCORE_SAMPLES, TUNING_BOUNDS, type EchoCalibration, type Grade, type Profile, type QueryLogEntry, type ScoreCalibration, type Tuning } from './types.ts';
 
 export const MIN_SAMPLES = 30;
@@ -91,7 +91,7 @@ export function buildTuningProposal(
       const qt = (p: number): string => pct(topConfs, p)?.toFixed(2) ?? '-';
       // gate vem de suggestGate, não recalculado aqui: é o mesmo número que o
       // primer publica (ver comentário em suggestGate)
-      const gate = suggestGate(graded, scoreCalibration);
+      const gate = suggestGate(graded, scoreCalibration, benchGate());
       lines.push(
         `calibrado com ${scoreCalibration.nSamples} vec_scores | percentis vec: ${Object.entries(scoreCalibration.percentiles).map(([k, v]) => `${k}=${v.toFixed(3)}`).join(' ')}`,
         `confidence de todos os hits: p25=${q(25)} p50=${q(50)} p75=${q(75)} p90=${q(90)}`,

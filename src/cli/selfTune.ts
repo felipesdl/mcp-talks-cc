@@ -13,8 +13,10 @@ import { calibrateEcho } from '../learning/grading/echo.ts';
 import { buildProfile } from '../learning/profile.ts';
 import { buildPrimer, type PendingCandidateInfo } from '../learning/primer.ts';
 import { buildTuningProposal } from '../learning/tuner.ts';
-import { getTuning, sanitizeTuning, tuningEquals } from '../mcp/tuning.ts';
-import { buildScoreCalibration } from '../mcp/scoreCalibration.ts';
+import { getTuning, sanitizeTuning, setTuningOverride, tuningEquals } from '../mcp/tuning.ts';
+import { benchNotWorse, readEvalCases, runRecallBench } from '../learning/recallBench.ts';
+import { mergedScoreCalibration } from '../learning/scoreSamples.ts';
+import { usageSection, usageStats } from '../learning/usage.ts';
 import { gradeSchema, MIN_ECHO_SAMPLES, MIN_SCORE_SAMPLES, type EchoCalibration, type Grade, type QueryLogEntry, type Tuning, type TuningRejection } from '../learning/types.ts';
 
 const SETTLE_MS = 45 * 60 * 1000; // espera sinais de follow-up + ingest do transcript
@@ -61,6 +63,33 @@ function dedupeGrades(grades: Grade[]): Grade[] {
     if (!prev || g.ts >= prev.ts) byTs.set(g.queryTs, g);
   }
   return [...byTs.values()];
+}
+
+/**
+ * Candidate só vira pendência se não piorar o gabarito (learning/recallBench.ts).
+ * Sem gabarito, passa: o comportamento anterior (proposta sempre cobrada) segue
+ * valendo pra quem não montou o eval. O resultado vai pro rationale.
+ */
+let benchNote = '';
+async function candidatePassesBench(candidate: Tuning): Promise<boolean> {
+  const cases = readEvalCases();
+  if (!cases) {
+    benchNote = '## bench do candidate\nsem gabarito (recall-eval.jsonl), proposta não validada.\n';
+    return true;
+  }
+  // searchMemory() chamado direto não passa pelo handler da tool, então o
+  // bench não entra no query-log (não envenena a calibração).
+  try {
+    const current = await runRecallBench(cases);
+    setTuningOverride(sanitizeTuning(candidate));
+    const cand = await runRecallBench(cases);
+    const ok = benchNotWorse(cand, current);
+    const f = (r: { recallAtK: number; mrr: number }): string => `r@8=${(r.recallAtK * 100).toFixed(1)}% MRR=${r.mrr.toFixed(3)}`;
+    benchNote = `## bench do candidate\natual ${f(current)} | candidate ${f(cand)} → ${ok ? 'ok, pode aplicar' : 'PIORA, descartado'}\n`;
+    return ok;
+  } finally {
+    setTuningOverride(null);
+  }
 }
 
 async function main(): Promise<void> {
@@ -138,25 +167,11 @@ async function main(): Promise<void> {
     const newCalibration = calibrateEcho(echoRaws, MIN_ECHO_SAMPLES);
     await writeAtomic(learningPaths.echoCalibration, JSON.stringify(newCalibration, null, 2));
 
-    // calibração de score: CDF empírica de vec_score de TODOS os hits já
-    // retornados na janela. É o que dá sentido ao `confidence` do search_memory
-    // (score cru não é comparável entre queries).
-    const windowStartForScores = new Date(
-      Date.now() - WINDOW_DAYS * 24 * 3600 * 1000,
-    ).toISOString();
-    const scoreEntries = entries.filter(
-      (e) => e.tool === 'search_memory' && e.ts >= windowStartForScores,
-    );
-    const vecScores = scoreEntries.flatMap((e) => e.hits.map((h) => h.vecScore));
-    // CDF da margem sobre o piso da query. Só entradas que já gravaram
-    // poolVecMedian contam; enquanto não houver amostra, confidence segue só
-    // absoluta (ver src/mcp/scoreCalibration.ts).
-    const margins = scoreEntries.flatMap((e) =>
-      typeof e.poolVecMedian === 'number'
-        ? e.hits.map((h) => h.vecScore - e.poolVecMedian!)
-        : [],
-    );
-    const scoreCalibration = buildScoreCalibration(vecScores, MIN_SCORE_SAMPLES, margins);
+    // calibração de score: CDF empírica de vec_score (e da margem sobre o piso
+    // da query) que dá sentido ao `confidence` do search_memory. Últimas N
+    // amostras reais + probe sintético, sem janela de tempo: ver
+    // src/learning/scoreSamples.ts pro porquê.
+    const scoreCalibration = mergedScoreCalibration(entries);
     await writeAtomic(
       learningPaths.scoreCalibration,
       JSON.stringify(scoreCalibration, null, 2),
@@ -170,7 +185,19 @@ async function main(): Promise<void> {
       .map((g) => ({ grade: g, entry: entryByTs.get(g.queryTs) }))
       .filter((x): x is { grade: Grade; entry: QueryLogEntry } => x.entry !== undefined);
 
-    const profile = buildProfile(graded, WINDOW_DAYS, scoreCalibration);
+    const sessionsInWindow = await withSession(async (s) => {
+      const r = await s.run('MATCH (se:Session) WHERE se.startedAt >= $w RETURN count(se) AS n', { w: windowStart });
+      return Number(r.records[0]?.get('n') ?? 0);
+    }).catch(() => null);
+    const usage = usageStats(entries, windowStart, WINDOW_DAYS, sessionsInWindow);
+    const crossRules = await withSession(async (s) => {
+      const r = await s.run(
+        `MATCH (d:Decision { status: 'active', scope: 'cross' }) WHERE d.kind IN ['rule', 'gotcha']
+         RETURN d.kind AS kind, d.text AS text, d.repo AS repo ORDER BY d.createdAt DESC LIMIT 4`,
+      );
+      return r.records.map((rec) => ({ kind: rec.get('kind') as string, text: rec.get('text') as string, repo: rec.get('repo') as string | null }));
+    }).catch(() => []);
+    const profile = { ...buildProfile(graded, WINDOW_DAYS, scoreCalibration), usage, crossRules };
     await writeAtomic(learningPaths.profile, JSON.stringify(profile, null, 2));
 
     // candidate antes do primer: o primer avisa sobre pendência de tuning
@@ -181,7 +208,7 @@ async function main(): Promise<void> {
       newCalibration,
       scoreCalibration,
     );
-    await writeAtomic(learningPaths.tuningRationale, rationale);
+    await writeAtomic(learningPaths.tuningRationale, `${rationale}\n\n${usageSection(usage)}`);
     const rejection = await readJson<TuningRejection>(learningPaths.tuningRejected);
     let pendingCandidate: PendingCandidateInfo | null = null;
     if (candidate && tuningEquals(sanitizeTuning(candidate), getTuning())) {
@@ -203,8 +230,14 @@ async function main(): Promise<void> {
       console.log(
         `[self-tune] candidate == proposta recusada em ${rejection.rejectedAt} (${graded.length} grades), sem cobrança. Detalhe: ${learningPaths.tuningRationale}`,
       );
+    } else if (candidate && !(await candidatePassesBench(candidate))) {
+      // Fase 7: o grader ainda é proxy fraco (echo mede tema, não uso). Proposta
+      // que piora o gabarito não vira cobrança no primer; fica só no log.
+      await rm(learningPaths.tuningCandidate, { force: true });
+      console.log(`[self-tune] candidate piora o bench:recall, descartado. Detalhe: ${learningPaths.tuningRationale}`);
     } else if (candidate) {
       // mesmo conteúdo do run anterior -> preserva updatedAt p/ o primer mostrar a idade real da pendência
+      await appendFile(learningPaths.tuningRationale, `\n${benchNote}`);
       const prev = await readJson<Tuning>(learningPaths.tuningCandidate);
       const sameContent =
         prev &&
