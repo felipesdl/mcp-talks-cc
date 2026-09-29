@@ -4,6 +4,10 @@
 # TODOS os caminhos de saída (o session-primer.sh lê isso pra avisar staleness).
 set -uo pipefail
 
+# A distilação chama `claude -p`, que dispara SessionStart de novo. Sem esta
+# guarda cada distilação abriria outro ingest (recursão).
+[ "${MCP_TALKS_IN_DISTILL:-}" = "1" ] && exit 0
+
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${HOME}/.cache/mcp-talks-cc"
 LOG="${LOG_DIR}/ingest.log"
@@ -193,4 +197,40 @@ fi
 log "self-tune start"
 npm run self-tune >> "$LOG" 2>&1
 log "self-tune done (exit $?)"
+
+# ── Distilação: sessões fechadas viram nós Decision (src/distill/) ─────────
+# Depois do self-tune de propósito: cada sessão custa ~15-30s de claude -p, e
+# o primer desta rodada não pode esperar por isso (a próxima já pega). Teto
+# baixo por run, em duas filas:
+#   1. recentes (últimos 7 dias), até DISTILL_N: o que está em uso fica em dia;
+#   2. backlog, até DISTILL_BACKLOG_N, da MAIS ANTIGA pra mais nova: o
+#      histórico vai sendo destilado sem mexer no que é recente.
+# MCP_TALKS_DISTILL_PER_RUN=0 desliga tudo; MCP_TALKS_DISTILL_BACKLOG_PER_RUN=0 só o backlog.
+DISTILL_N="${MCP_TALKS_DISTILL_PER_RUN:-5}"
+DISTILL_BACKLOG_N="${MCP_TALKS_DISTILL_BACKLOG_PER_RUN:-3}"
+if [ "$DISTILL_N" -gt 0 ] 2>/dev/null && command -v claude >/dev/null 2>&1; then
+  # Solta o lock do ingest ANTES: a distilação leva minutos, e com o lock preso
+  # toda sessão aberta nesse meio tempo gravava health=lock-held, o que virava
+  # [ALERTA] falso no primer da sessão seguinte. Lock próprio (mkdir atômico)
+  # só pra não ter 2 distilações chamando o claude pras mesmas sessões.
+  rm -rf "$LOCK_DIR" 2>/dev/null
+  trap - EXIT INT TERM
+  DISTILL_LOCK="${LOG_DIR}/distill.lock.d"
+  if [ -d "$DISTILL_LOCK" ] && [ $(( $(now_epoch) - $(mtime_of "$DISTILL_LOCK") )) -gt 1800 ]; then
+    rm -rf "$DISTILL_LOCK" 2>/dev/null # distilação morta há 30min+
+  fi
+  if mkdir "$DISTILL_LOCK" 2>/dev/null; then
+    trap 'rm -rf "$DISTILL_LOCK" 2>/dev/null || true' EXIT INT TERM
+    log "distill start (limit $DISTILL_N)"
+    npm run distill -- --limit="$DISTILL_N" --recent-days=7 >> "$LOG" 2>&1
+    log "distill done (exit $?)"
+    if [ "$DISTILL_BACKLOG_N" -gt 0 ] 2>/dev/null; then
+      log "distill backlog start (limit $DISTILL_BACKLOG_N, mais antigas primeiro)"
+      npm run distill -- --limit="$DISTILL_BACKLOG_N" --oldest-first >> "$LOG" 2>&1
+      log "distill backlog done (exit $?)"
+    fi
+  else
+    log "distill pulado (outra distilação rodando)"
+  fi
+fi
 exit 0
