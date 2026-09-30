@@ -208,7 +208,15 @@ log "self-tune done (exit $?)"
 # MCP_TALKS_DISTILL_PER_RUN=0 desliga tudo; MCP_TALKS_DISTILL_BACKLOG_PER_RUN=0 só o backlog.
 DISTILL_N="${MCP_TALKS_DISTILL_PER_RUN:-5}"
 DISTILL_BACKLOG_N="${MCP_TALKS_DISTILL_BACKLOG_PER_RUN:-3}"
-if [ "$DISTILL_N" -gt 0 ] 2>/dev/null && command -v claude >/dev/null 2>&1; then
+# OPT-IN: gasta tokens da conta de quem roda. Liga com MCP_TALKS_DISTILL=1 no
+# .env (ou no ambiente). Quem só atualizou o repo não passa a pagar sem saber.
+DISTILL_ON="${MCP_TALKS_DISTILL:-}"
+if [ -z "$DISTILL_ON" ] && [ -f "${PROJECT_DIR}/.env" ]; then
+  DISTILL_ON="$(sed -nE 's/^MCP_TALKS_DISTILL=([^[:space:]#]*).*/\1/p' "${PROJECT_DIR}/.env" | tail -1)"
+fi
+if [ "$DISTILL_ON" != "1" ]; then
+  log "distill desligado (MCP_TALKS_DISTILL=1 no .env liga)"
+elif [ "$DISTILL_N" -gt 0 ] 2>/dev/null && command -v claude >/dev/null 2>&1; then
   # Solta o lock do ingest ANTES: a distilação leva minutos, e com o lock preso
   # toda sessão aberta nesse meio tempo gravava health=lock-held, o que virava
   # [ALERTA] falso no primer da sessão seguinte. Lock próprio (mkdir atômico)
