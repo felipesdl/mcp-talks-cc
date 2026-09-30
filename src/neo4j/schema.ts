@@ -15,6 +15,8 @@ const CONSTRAINTS = [
   // minutos para horas.
   'CREATE CONSTRAINT task_key IF NOT EXISTS FOR (t:Task) REQUIRE t.key IS UNIQUE',
   'CREATE CONSTRAINT file_key IF NOT EXISTS FOR (f:File) REQUIRE f.key IS UNIQUE',
+  // v0.3: distilação faz MERGE (d:Decision { id }) por item
+  'CREATE CONSTRAINT decision_id IF NOT EXISTS FOR (d:Decision) REQUIRE d.id IS UNIQUE',
 ];
 
 const INDEXES = [

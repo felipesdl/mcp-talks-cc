@@ -65,6 +65,39 @@ else
   WARN="[ALERTA mcp-talks-cc] sem health.json: o hook de ingest nunca completou nesta maquina. Conferir ~/.cache/mcp-talks-cc/ingest.log. "
 fi
 
+# ── 2b) versão: repo atualizado (git pull) sem rodar o upgrade ───────────────
+# O carimbo é gravado por scripts/upgrade.sh. Sem ele (instalação anterior à
+# v0.3) também conta como desatualizado: é justamente quem precisa do aviso.
+# Em vez de só avisar, o primer manda o Claude PERGUNTAR (atualizar agora ou
+# não) e, aceito, perguntar de novo antes de mexer no CLAUDE.md. Recusa grava
+# upgrade-snooze e cala a pergunta por alguns dias.
+# Texto sem aspas duplas, | & ou \ : entra num sed sobre JSON.
+REPO_VERSION="$(sed -nE 's/^[[:space:]]*"version":[[:space:]]*"([^"]+)".*/\1/p' "${PROJECT_DIR}/package.json" 2>/dev/null | head -1)"
+INSTALLED="$(cat "${CACHE}/installed-version" 2>/dev/null || true)"
+SNOOZE_UNTIL="$(cat "${CACHE}/upgrade-snooze" 2>/dev/null || echo 0)"
+case "$SNOOZE_UNTIL" in ''|*[!0-9]*) SNOOZE_UNTIL=0 ;; esac
+# versão do bloco = a do marcador no snippet do repo (fonte única)
+SNIPPET_VER="$(sed -nE 's/.*mcp-talks-cc:snippet (v[0-9]+).*/\1/p' "${PROJECT_DIR}/docs/CLAUDE.md.snippet.md" 2>/dev/null | head -1)"
+SNIPPET_OK=1
+if [ -n "$SNIPPET_VER" ]; then
+  grep -q "mcp-talks-cc:snippet ${SNIPPET_VER}" "${HOME}/.claude/CLAUDE.md" 2>/dev/null || SNIPPET_OK=0
+fi
+# Distilação sem resposta ainda (linha ausente no .env; =0 também é resposta).
+DISTILL_STEP=""
+if ! grep -q '^MCP_TALKS_DISTILL=' "${PROJECT_DIR}/.env" 2>/dev/null; then
+  DISTILL_STEP="Por fim pergunte com AskUserQuestion se liga a distilacao automatica (opcoes: Ligar, Nao ligar). Explique em 3 linhas curtas, sem empurrar: O QUE E: ao abrir uma sessao, conversas ja encerradas viram regras, decisoes e armadilhas curtas (ate 300 chars, ex: limite de convites e por empresa por dia, mudar a config so vale no dia seguinte), ligadas a task e aos arquivos. POR QUE VALE: essas regras aparecem sozinhas no inicio da sessao e ao abrir um arquivo que ja deu problema, e uma regra custa uns 50 tokens de contexto contra 3 trechos de conversa de uns 150 cada; sem isso a memoria so devolve trecho bruto de conversa. CUSTO: roda em background com claude -p Haiku, uns 10k tokens da conta dele por sessao destilada (ate 5 recentes mais 3 antigas por sessao aberta), nao atrasa nada, desliga quando quiser. Depois rode npm run upgrade -- --distill=on ou --distill=off ${PROJECT_HINT}."
+fi
+if [ "$(date +%s)" -ge "$SNOOZE_UNTIL" ]; then
+  CLAUDE_MD_STEP="depois rode npm run upgrade:claude-md -- --dry-run ${PROJECT_HINT}, resuma o diff pro user e pergunte com AskUserQuestion se aplica as regras novas no CLAUDE.md dele (opcoes: Aplicar, Manter como esta); se Aplicar, rode npm run upgrade:claude-md -- --apply (faz backup). ${DISTILL_STEP}"
+  if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$INSTALLED" ]; then
+    WARN="${WARN}[ATUALIZACAO mcp-talks-cc] versao ${REPO_VERSION} disponivel (instalada: ${INSTALLED:-anterior a 0.3.0}). Na PRIMEIRA resposta, antes do resto, pergunte com AskUserQuestion se quer atualizar o mcp-talks-cc agora (opcoes: Atualizar agora, Agora nao). Se Atualizar agora: rode npm run upgrade ${PROJECT_HINT}; ${CLAUDE_MD_STEP} Se Agora nao: rode npm run upgrade -- --snooze no mesmo diretorio (adia 3 dias). Novidades em CHANGELOG.md. "
+  elif [ "$SNIPPET_OK" -eq 0 ]; then
+    WARN="${WARN}[ATUALIZACAO mcp-talks-cc] o bloco de memoria do CLAUDE.md esta desatualizado. Na PRIMEIRA resposta, ${CLAUDE_MD_STEP#depois } Se Manter como esta: rode npm run upgrade -- --snooze ${PROJECT_HINT}. "
+  elif [ -n "$DISTILL_STEP" ]; then
+    WARN="${WARN}[ATUALIZACAO mcp-talks-cc] Na PRIMEIRA resposta, antes do resto: ${DISTILL_STEP#Por fim } "
+  fi
+fi
+
 # ── 3) saída ────────────────────────────────────────────────────────────────
 PRIMER_OK=0
 if [ -s "$PRIMER" ]; then

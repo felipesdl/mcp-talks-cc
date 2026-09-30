@@ -1,6 +1,6 @@
 {
   "name": "mcp-talks-cc",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "MCP server local que indexa conversas Claude Code (conversas + plans + todos + task memory) em Neo4j com busca vetorial",
   "license": "MIT",
   "type": "module",
@@ -33,7 +33,9 @@
     "calibrate:probe": "node --env-file=.env --experimental-strip-types src/cli/calibrateProbe.ts",
     "eval:candidates": "node --env-file=.env --experimental-strip-types src/cli/evalCandidates.ts",
     "bench:recall": "node --env-file=.env --experimental-strip-types src/cli/benchRecall.ts",
-    "distill": "node --env-file=.env --experimental-strip-types src/cli/distill.ts"
+    "distill": "node --env-file=.env --experimental-strip-types src/cli/distill.ts",
+    "upgrade": "bash scripts/upgrade.sh",
+    "upgrade:claude-md": "node scripts/apply-claude-md.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

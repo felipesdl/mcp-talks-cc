@@ -202,6 +202,22 @@ Idempotente — seguro re-rodar. Faz, em ordem:
 
 No fim imprime onde fica o log e como verificar (`npm run db:stats`, `/mcp`).
 
+## Atualizar uma instalação existente
+
+```bash
+git pull && npm run upgrade
+```
+
+Idempotente, não re-ingere nem apaga dado. Aplica schema novo, hooks novos, calibração se faltar,
+e grava a versão em `~/.cache/mcp-talks-cc/installed-version`.
+
+Na prática basta o `git pull`: na sessão seguinte o primer detecta a versão nova e o Claude
+pergunta "atualizar agora / agora não". Aceitando, ele roda o upgrade e depois pergunta se
+aplica o bloco novo no seu CLAUDE.md, mostrando o diff (`npm run upgrade:claude-md`, com
+backup). "Agora não" adia 3 dias. Os passos que não dá pra
+automatizar (bloco do CLAUDE.md, opt-ins que gastam tokens) saem impressos no fim. O que muda em
+cada versão, e o que fazer, fica no [CHANGELOG](CHANGELOG.md).
+
 ## Schema Neo4j
 
 ```

@@ -9,10 +9,10 @@ cd "$PROJECT_DIR"
 
 step() { echo; echo "==> $1"; }
 
-step "1/8 npm install"
+step "1/7 npm install"
 npm install
 
-step "2/8 .env"
+step "2/7 .env"
 if [[ ! -f .env ]]; then
   cp .env.example .env
   echo "  .env criado a partir de .env.example — revise segredos se necessário."
@@ -20,16 +20,16 @@ else
   echo "  .env já existe, mantido."
 fi
 
-step "3/8 Neo4j (docker compose, espera healthy)"
+step "3/7 Neo4j (docker compose, espera healthy)"
 npm run infra:up
 
-step "4/8 schema (constraints + vector index)"
+step "4/7 schema (constraints + vector index)"
 npm run db:init
 
-step "5/8 ingest inicial (--source=all, incremental nas próximas vezes)"
+step "5/7 ingest inicial (--source=all, incremental nas próximas vezes)"
 npm run ingest -- --source=all
 
-step "6/8 registro MCP no Claude Code"
+step "6/7 registro MCP no Claude Code"
 if claude mcp get mcp-talks-cc >/dev/null 2>&1; then
   echo "  server 'mcp-talks-cc' já registrado, mantido."
 else
@@ -41,13 +41,8 @@ else
   echo "  server 'mcp-talks-cc' registrado."
 fi
 
-step "7/8 hook SessionStart (auto-ingest)"
-node "${PROJECT_DIR}/scripts/install-hook.mjs"
-
-step "8/8 permissões"
-chmod +x "${PROJECT_DIR}/scripts/session-ingest.sh"
-echo "  scripts/session-ingest.sh executável."
-
+step "7/7 hooks, calibração e carimbo de versão (scripts/upgrade.sh)"
+bash "${PROJECT_DIR}/scripts/upgrade.sh"
 echo
 echo "================================================================"
 echo "Setup completo."

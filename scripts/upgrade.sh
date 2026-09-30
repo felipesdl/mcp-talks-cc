@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Upgrade idempotente de uma instalação existente do mcp-talks-cc.
+#
+#   git pull && npm run upgrade
+#   npm run upgrade -- --snooze[=DIAS]   # 'agora não': primer não pergunta por N dias (default 3)
+#   npm run upgrade -- --distill=on|off  # resposta da pergunta de distilação (grava no .env)
+#
+# Seguro re-rodar. Não re-ingere nada nem apaga dado: só aplica o que uma versão
+# nova precisa (deps, schema, hooks, calibração) e grava a versão instalada em
+# ~/.cache/mcp-talks-cc/installed-version. O session-primer.sh compara esse
+# carimbo com o package.json e avisa no início da sessão quando o repo foi
+# atualizado sem rodar isto.
+#
+# O que NÃO dá pra automatizar vai impresso no fim (bloco do CLAUDE.md,
+# opt-ins que gastam tokens). Detalhe por versão em CHANGELOG.md.
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$PROJECT_DIR"
+CACHE="${HOME}/.cache/mcp-talks-cc"
+STAMP="${CACHE}/installed-version"
+# versão do bloco = a do marcador no snippet do repo (fonte única)
+SNIPPET_VERSION="$(sed -nE 's/.*mcp-talks-cc:snippet (v[0-9]+).*/\1/p' docs/CLAUDE.md.snippet.md | head -1)"
+mkdir -p "$CACHE"
+
+# Resposta 'agora não' da pergunta que o primer manda o Claude fazer.
+for a in "$@"; do
+  case "$a" in
+    --snooze|--snooze=*)
+      DAYS="${a#--snooze=}"; [ "$DAYS" = "--snooze" ] && DAYS=3
+      case "$DAYS" in ''|*[!0-9]*) DAYS=3 ;; esac
+      echo $(( $(date +%s) + DAYS * 86400 )) > "${CACHE}/upgrade-snooze"
+      echo "mcp-talks-cc: atualização adiada por ${DAYS} dia(s). Rode npm run upgrade quando quiser."
+      exit 0 ;;
+  esac
+done
+# Resposta da pergunta de distilação automática. Grava explícito (=1 ou =0):
+# linha ausente é o que faz o primer perguntar, então "não" também fica gravado.
+for a in "$@"; do
+  case "$a" in
+    --distill=on|--distill=off)
+      V=0; [ "$a" = "--distill=on" ] && V=1
+      touch .env
+      if grep -q '^MCP_TALKS_DISTILL=' .env; then
+        tmp="$(mktemp "${TMPDIR:-/tmp}/mcp-env.XXXXXX")"
+        sed -E "s/^MCP_TALKS_DISTILL=.*/MCP_TALKS_DISTILL=${V}/" .env > "$tmp" && cat "$tmp" > .env && rm -f "$tmp"
+      else
+        printf '\n# distilação automática no hook (ver .env.example)\nMCP_TALKS_DISTILL=%s\n' "$V" >> .env
+      fi
+      [ "$V" = 1 ] && echo "mcp-talks-cc: distilação automática LIGADA (vale a partir da próxima sessão)." \
+                   || echo "mcp-talks-cc: distilação automática desligada. Manual: npm run distill -- --limit=10"
+      exit 0 ;;
+  esac
+done
+rm -f "${CACHE}/upgrade-snooze"
+
+step() { echo; echo "==> $1"; }
+REPO_VERSION="$(sed -nE 's/^[[:space:]]*"version":[[:space:]]*"([^"]+)".*/\1/p' package.json | head -1)"
+FROM="$(cat "$STAMP" 2>/dev/null || echo 'desconhecida')"
+echo "mcp-talks-cc: instalada ${FROM} -> repo ${REPO_VERSION}"
+
+step "1/6 dependências"
+# package-lock mais novo que o último install = dependência mudou
+if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
+  npm install
+else
+  echo "  sem mudança de dependência, pulando."
+fi
+
+step "2/6 Neo4j"
+npm run infra:up
+
+step "3/6 schema (constraints e índices novos, IF NOT EXISTS)"
+npm run db:init
+
+step "4/6 hooks do Claude Code (merge sem sobrescrever, backup em settings.json.bak)"
+node scripts/install-hook.mjs
+chmod +x scripts/*.sh
+
+step "5/6 calibração de confidence"
+# Sem calibração pronta, search_memory devolve conf n/a e o push não dispara.
+READY="$(sed -nE 's/.*"ready":[[:space:]]*(true|false).*/\1/p' "${CACHE}/score-calibration.json" 2>/dev/null | head -1)"
+if [ "$READY" = "true" ]; then
+  echo "  já calibrada, pulando."
+else
+  npm run calibrate:probe
+fi
+
+step "6/6 carimbo de versão"
+echo "$REPO_VERSION" > "$STAMP"
+echo "  instalada agora: ${REPO_VERSION}"
+
+# ── passos manuais ─────────────────────────────────────────────────────────
+MANUAL=0
+echo
+echo "================================================================"
+if ! grep -q "mcp-talks-cc:snippet ${SNIPPET_VERSION}" "${HOME}/.claude/CLAUDE.md" 2>/dev/null; then
+  MANUAL=1
+  echo "MANUAL: seu ~/.claude/CLAUDE.md não tem o bloco ${SNIPPET_VERSION} do mcp-talks-cc."
+  echo "  Veja o diff: npm run upgrade:claude-md -- --dry-run"
+  echo "  Aplique:     npm run upgrade:claude-md -- --apply   (backup automático)"
+  echo "  (é o que faz o Claude re-buscar no meio da conversa, usar brief +"
+  echo "  expand_hits e tratar os ponteiros de memória)."
+  echo
+fi
+DISTILL_ON="$(sed -nE 's/^MCP_TALKS_DISTILL=([^[:space:]#]*).*/\1/p' .env 2>/dev/null | tail -1)"
+if [ "$DISTILL_ON" != "1" ]; then
+  echo "OPCIONAL: distilação automática está DESLIGADA (gasta tokens de Haiku da"
+  echo "  sua conta, ~10k por sessão). Pra ligar: npm run upgrade -- --distill=on"
+  echo "  Manual sem ligar: npm run distill -- --limit=10"
+  echo
+fi
+if [ ! -f "${CACHE}/recall-eval.jsonl" ]; then
+  echo "OPCIONAL: sem gabarito de recall, o gate de citação usa percentil (cota)"
+  echo "  em vez de precisão medida. Ver README, seção Medição."
+  echo
+fi
+echo "Abra uma sessão NOVA do Claude Code: o MCP server e os hooks carregam o"
+echo "código novo só no início da sessão."
+[ "$MANUAL" -eq 1 ] && echo "Há passo MANUAL acima."
+echo "Mudanças desta versão: ${PROJECT_DIR}/CHANGELOG.md"
+echo "================================================================"

@@ -10,6 +10,7 @@ literal, então funciona pra qualquer prefixo.
 
 ---
 
+<!-- mcp-talks-cc:snippet v3 (npm run upgrade compara esta versão) -->
 ## Memória cross-conversa (MCP `mcp-talks-cc`)
 
 O server MCP se chama `mcp-talks-cc` (tools no formato `mcp__mcp-talks-cc__*`). Sempre referir a ele por esse nome, nunca "memory". MCP local indexa conversas Claude Code passadas, plans, todos e task memory em Neo4j com busca vetorial. Tools: `search_memory`, `expand_hits`, `get_session_transcript`, `find_related_plans`, `find_decisions`, `list_project_activity`. Resources: `memory://stats`, `memory://schema`, `memory://profile` (perfil aprendido pelo self-tune; use pra responder "oq vc aprendeu de mim").
