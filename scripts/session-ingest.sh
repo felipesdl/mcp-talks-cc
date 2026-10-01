@@ -120,8 +120,11 @@ if acquire_lock; then
   LOCK_HELD=1
   trap 'rm -rf "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
 elif [ -d "$LOCK_DIR" ]; then
+  # NÃO grava health: quem tem o lock grava o status final logo depois. Gravar
+  # lock-held aqui virava [ALERTA] falso no primer da sessão seguinte (abrir
+  # sessões em sequência, /clear) e o Claude reagia rodando outro ingest à toa.
+  # Lock órfão (pid morto) não cai aqui: acquire_lock rouba por liveness.
   log "já tem ingest rodando (lock ativo), skip"
-  write_health "lock-held" "outro ingest em andamento"
   exit 0
 else
   # Fail-open: guard quebrado nunca pode virar skip permanente. Guard que falha

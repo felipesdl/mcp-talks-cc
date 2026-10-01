@@ -58,7 +58,9 @@ if [ -s "$HEALTH" ]; then
     # lastOkEpoch=0 é "nunca", não "há 20 mil dias".
     if [ "$LAST_OK" -eq 0 ]; then LAST_TXT="nunca teve ingest ok"; else LAST_TXT="ultimo ingest ok ha $(( AGE / 86400 ))d"; fi
     WARN="[ALERTA mcp-talks-cc] memoria DESATUALIZADA: ${LAST_TXT} (status atual: ${STATUS}). Avise o user na primeira resposta e sugira rodar npm run ingest -- --source=all ${PROJECT_HINT}. Resultados de search_memory nao cobrem conversas recentes. "
-  elif [ "$STATUS" != "ok" ]; then
+  # lock-held é ingest em andamento, não falha (versões até 0.3.0 gravavam isso
+  # no skip; o dono do lock grava o status real ao terminar)
+  elif [ "$STATUS" != "ok" ] && [ "$STATUS" != "lock-held" ]; then
     WARN="[ALERTA mcp-talks-cc] ultimo ingest terminou em status ${STATUS}; conferir ~/.cache/mcp-talks-cc/ingest.log. "
   fi
 else
@@ -89,7 +91,9 @@ if ! grep -q '^MCP_TALKS_DISTILL=' "${PROJECT_DIR}/.env" 2>/dev/null; then
 fi
 if [ "$(date +%s)" -ge "$SNOOZE_UNTIL" ]; then
   CLAUDE_MD_STEP="depois rode npm run upgrade:claude-md -- --dry-run ${PROJECT_HINT}, resuma o diff pro user e pergunte com AskUserQuestion se aplica as regras novas no CLAUDE.md dele (opcoes: Aplicar, Manter como esta); se Aplicar, rode npm run upgrade:claude-md -- --apply (faz backup). ${DISTILL_STEP}"
-  if [ -n "$REPO_VERSION" ] && [ "$REPO_VERSION" != "$INSTALLED" ]; then
+  # Compara só major.minor: patch é por convenção sem passo de upgrade (o código
+# e os scripts já valem no git pull), então não merece pergunta.
+if [ -n "$REPO_VERSION" ] && [ "${REPO_VERSION%.*}" != "${INSTALLED%.*}" ]; then
     WARN="${WARN}[ATUALIZACAO mcp-talks-cc] versao ${REPO_VERSION} disponivel (instalada: ${INSTALLED:-anterior a 0.3.0}). Na PRIMEIRA resposta, antes do resto, pergunte com AskUserQuestion se quer atualizar o mcp-talks-cc agora (opcoes: Atualizar agora, Agora nao). Se Atualizar agora: rode npm run upgrade ${PROJECT_HINT}; ${CLAUDE_MD_STEP} Se Agora nao: rode npm run upgrade -- --snooze no mesmo diretorio (adia 3 dias). Novidades em CHANGELOG.md. "
   elif [ "$SNIPPET_OK" -eq 0 ]; then
     WARN="${WARN}[ATUALIZACAO mcp-talks-cc] o bloco de memoria do CLAUDE.md esta desatualizado. Na PRIMEIRA resposta, ${CLAUDE_MD_STEP#depois } Se Manter como esta: rode npm run upgrade -- --snooze ${PROJECT_HINT}. "

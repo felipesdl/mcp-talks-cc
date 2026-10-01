@@ -12,6 +12,18 @@ repo está à frente da instalação e o Claude pergunta na primeira resposta:
 
 Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --apply`. Tudo idempotente.
 
+Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
+`git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
+
+## 0.3.1 (2026-10-01)
+
+- Fim do `[ALERTA mcp-talks-cc] ... lock-held` falso. Abrir uma sessão (ou `/clear`) enquanto
+  outro ingest rodava gravava `lock-held` no health, e o primer seguinte tratava como falha.
+  Quem pula por lock ativo agora só loga; o dono do lock grava o status final.
+- Primer compara só `major.minor` da versão: patch não pergunta "atualizar agora".
+
+Nada a fazer: `git pull` basta.
+
 ## 0.3.0 (2026-09-29)
 
 ### O que fazer ao atualizar

@@ -18,7 +18,7 @@ import { startWarmSocket } from './warmSocket.ts';
 
 const server = new McpServer({
   name: 'mcp-talks-cc',
-  version: '0.3.0',
+  version: '0.3.1',
 });
 
 registerSearchMemoryTool(server);
