@@ -107,6 +107,32 @@ export async function writeToolCalls(rows: ToolCallRecord[]): Promise<void> {
   });
 }
 
+/**
+ * Ids de chunk que já estão no grafo com o MESMO texto e embedding da dimensão
+ * atual. O id só hasheia os 200 primeiros chars, então comparar o texto inteiro
+ * é o que garante que o vetor gravado ainda vale (plan editado no fim, etc.).
+ */
+export async function findReusableChunkIds(
+  rows: Array<{ id: string; text: string }>,
+  dim: number,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (rows.length === 0) return out;
+  await withSession(async (s) => {
+    for (const batch of batches(rows)) {
+      const res = await s.run(
+        `UNWIND $rows AS r
+         MATCH (c:Chunk { id: r.id })
+         WHERE c.text = r.text AND c.embedding IS NOT NULL AND size(c.embedding) = $dim
+         RETURN c.id AS id`,
+        { rows: batch, dim },
+      );
+      for (const rec of res.records) out.add(rec.get('id') as string);
+    }
+  });
+  return out;
+}
+
 export async function writeChunks(rows: ChunkRecord[]): Promise<void> {
   if (rows.length === 0) return;
   await withSession(async (s) => {
@@ -138,7 +164,7 @@ export async function writeChunks(rows: ChunkRecord[]): Promise<void> {
                c.sessionId = r.sessionId,
                c.timestamp = r.timestamp,
                c.role = r.role,
-               c.embedding = r.embedding
+               c.embedding = coalesce(r.embedding, c.embedding)
            WITH c, r
            ${matchClause}
            MERGE (parent)-[:HAS_CHUNK]->(c)`,

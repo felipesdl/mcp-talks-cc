@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../../config.ts';
 import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
-import { embedBatched } from '../../embeddings/localEmbedder.ts';
+import { embedChunks } from '../embedChunks.ts';
 import { fingerprint, isUnchanged, markIngested } from '../checkpoint.ts';
 import type { Fingerprint } from '../checkpoint.ts';
 import { countReadError } from '../fsErrors.ts';
@@ -81,7 +81,6 @@ export async function ingestTaskMemory(
 
   const allDocs: TaskMemoryDocRecord[] = [];
   const allChunks: ChunkRecord[] = [];
-  const allTexts: string[] = [];
   let skipped = 0;
   const readErrors = { vanished: 0, failed: 0 };
 
@@ -135,7 +134,6 @@ export async function ingestTaskMemory(
             sessionId: null,
             timestamp: st.mtime.toISOString(),
           });
-          allTexts.push(piece);
         }
         await markIngested(fp, print);
       }
@@ -144,8 +142,7 @@ export async function ingestTaskMemory(
 
   if (allDocs.length > 0) await writeTaskMemoryDocs(allDocs);
   if (allChunks.length > 0) {
-    const vecs = await embedBatched(allTexts);
-    for (let j = 0; j < allChunks.length; j++) allChunks[j]!.embedding = vecs[j]!;
+    await embedChunks(allChunks, opts.force);
     await writeChunks(allChunks);
   }
 

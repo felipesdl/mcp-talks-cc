@@ -7,7 +7,7 @@ import { config } from '../../config.ts';
 import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
 import { prepareConversationText } from '../quality.ts';
-import { embedBatched } from '../../embeddings/localEmbedder.ts';
+import { embedChunks } from '../embedChunks.ts';
 import { fingerprint, isUnchanged, markIngested, save as saveCheckpoint } from '../checkpoint.ts';
 import type { Fingerprint } from '../checkpoint.ts';
 import { countReadError } from '../fsErrors.ts';
@@ -257,9 +257,8 @@ export async function parseSessionFile(
 
 function buildChunks(
   parsed: ParsedSession,
-): { chunks: ChunkRecord[]; texts: string[] } {
+): { chunks: ChunkRecord[] } {
   const chunks: ChunkRecord[] = [];
-  const texts: string[] = [];
   for (const e of parsed.embedInputs) {
     const pieces = chunkText(e.text);
     for (let i = 0; i < pieces.length; i++) {
@@ -280,10 +279,9 @@ function buildChunks(
         sessionId: parsed.session.id,
         timestamp: e.timestamp,
       });
-      texts.push(piece);
     }
   }
-  return { chunks, texts };
+  return { chunks };
 }
 
 // Backlog acumulado (centenas de arquivos) leva horas de embedding local.
@@ -378,10 +376,10 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     await writeMessages(parsed.messages);
     await writeToolCalls(parsed.tools);
 
-    const { chunks, texts } = buildChunks(parsed);
+    const { chunks } = buildChunks(parsed);
+    let embedded = 0;
     if (chunks.length > 0) {
-      const vecs = await embedBatched(texts);
-      for (let j = 0; j < chunks.length; j++) chunks[j]!.embedding = vecs[j]!;
+      embedded = await embedChunks(chunks, opts.force);
       await writeChunks(chunks);
     }
 
@@ -392,7 +390,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     totalMessages += parsed.messages.length;
     totalChunks += chunks.length;
     console.error(
-      `[conv] ${i + 1}/${target.length} ${basename(fp)} — ${parsed.messages.length}msg ${chunks.length}chunk ${Date.now() - t0}ms`,
+      `[conv] ${i + 1}/${target.length} ${basename(fp)} — ${parsed.messages.length}msg ${chunks.length}chunk (${embedded} embed) ${Date.now() - t0}ms`,
     );
   }
 

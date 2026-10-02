@@ -15,6 +15,19 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
+## 0.3.2 (2026-10-02)
+
+- Fim do pico de CPU ao abrir sessão. Arquivo que mudou (sessão que cresceu) era re-embedado
+  inteiro a cada SessionStart: ~300 chunks e ~75s com todos os cores cravados por sessão longa.
+  Agora só passa pelo modelo o chunk novo ou com texto diferente; o resto reaproveita o vetor
+  gravado. Medido: sessão de 295 chunks foi de ~73s pra 320ms, ingest do hook ~2s.
+- Ingest do hook limita o onnx a metade dos cores (`MCP_TALKS_BG=1`). O bge-m3 escala mal
+  depois de ~4 threads, então não fica mais lento. `EMBED_THREADS=N` no `.env` fixa o número.
+  MCP server e `npm run` manual seguem sem limite.
+
+Nada a fazer: `git pull` basta. A primeira sessão depois do pull ainda embeda o que estiver
+pendente; dali em diante cai pra segundos.
+
 ## 0.3.1 (2026-10-01)
 
 - Fim do `[ALERTA mcp-talks-cc] ... lock-held` falso. Abrir uma sessão (ou `/clear`) enquanto

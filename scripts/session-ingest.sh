@@ -17,6 +17,10 @@ SIMILAR_STAMP="${LOG_DIR}/last-similar.stamp"
 LOCK_STALE_SECS=3600      # lock mais velho que isso = processo morto
 SIMILAR_MIN_AGE_SECS=72000 # rebuild:similar no máx 1x/20h
 
+# Tudo que este hook roda é background: o localEmbedder limita as threads do
+# onnx a metade dos cores pra não travar a máquina a cada sessão aberta.
+export MCP_TALKS_BG=1
+
 mkdir -p "$LOG_DIR"
 cd "$PROJECT_DIR" || exit 0
 

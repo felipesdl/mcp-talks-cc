@@ -1,6 +1,21 @@
+import { availableParallelism } from 'node:os';
 import { pipeline, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import { config } from '../config.ts';
 import { EmbeddingError } from '../domain/errors.ts';
+
+/**
+ * Sem limite o onnx usa todos os cores, e o ingest do hook (que roda sozinho a
+ * cada SessionStart) travava a máquina, pior com pouca RAM caindo em swap. O
+ * bge-m3 escala mal depois de ~4 threads (medido num M-series de 10 cores: 4
+ * threads empata com 10), então em background metade dos cores custa ~nada.
+ * Processo interativo (MCP server, npm run manual) segue no default do onnx.
+ * EMBED_THREADS no .env vence os dois.
+ */
+function intraOpThreads(): number | undefined {
+  if (config.embed.threads > 0) return config.embed.threads;
+  if (process.env.MCP_TALKS_BG === '1') return Math.max(1, Math.floor(availableParallelism() / 2));
+  return undefined;
+}
 
 let _extractor: FeatureExtractionPipeline | null = null;
 let _loading: Promise<FeatureExtractionPipeline> | null = null;
@@ -12,10 +27,12 @@ export async function getEmbedder(): Promise<FeatureExtractionPipeline> {
   if (_loading) return _loading;
   _loading = (async () => {
     const t0 = Date.now();
-    console.error(`[embed] loading model ${config.embed.model} ...`);
+    console.error(`[embed] loading model ${config.embed.model} (threads=${intraOpThreads() ?? 'auto'}) ...`);
     try {
+      const threads = intraOpThreads();
       _extractor = await pipeline('feature-extraction', config.embed.model, {
         dtype: 'q8',
+        ...(threads ? { session_options: { intraOpNumThreads: threads } } : {}),
       });
     } catch (e) {
       _loading = null;

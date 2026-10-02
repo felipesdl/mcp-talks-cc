@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../../config.ts';
 import { chunkText } from '../chunker.ts';
 import { redact } from '../redact.ts';
-import { embedBatched } from '../../embeddings/localEmbedder.ts';
+import { embedChunks } from '../embedChunks.ts';
 import { fingerprint, isUnchanged, markIngested } from '../checkpoint.ts';
 import type { Fingerprint } from '../checkpoint.ts';
 import { countReadError } from '../fsErrors.ts';
@@ -34,7 +34,6 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
   const readErrors = { vanished: 0, failed: 0 };
   const plans: PlanRecord[] = [];
   const allChunks: ChunkRecord[] = [];
-  const allTexts: string[] = [];
 
   for (const fp of mdFiles) {
     let st: Stats;
@@ -79,7 +78,6 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
         sessionId: null,
         timestamp: st.mtime.toISOString(),
       });
-      allTexts.push(piece);
     }
     await markIngested(fp, print);
   }
@@ -88,8 +86,7 @@ export async function ingestPlans(opts: { force?: boolean } = {}): Promise<{
     await writePlans(plans);
   }
   if (allChunks.length > 0) {
-    const vecs = await embedBatched(allTexts);
-    for (let j = 0; j < allChunks.length; j++) allChunks[j]!.embedding = vecs[j]!;
+    await embedChunks(allChunks, opts.force);
     await writeChunks(allChunks);
     totalChunks = allChunks.length;
   }

@@ -20,6 +20,8 @@ export const config = {
     model: env('EMBED_MODEL', 'Xenova/bge-m3'),
     dim: parseInt(env('EMBED_DIM', '1024'), 10),
     batchSize: parseInt(env('EMBED_BATCH', '32'), 10),
+    /** intraOpNumThreads do onnx. 0 = decide sozinho (ver localEmbedder.ts). */
+    threads: parseInt(env('EMBED_THREADS', '0'), 10) || 0,
   },
   paths: {
     claudeHome: env('CLAUDE_HOME', join(HOME, '.claude')),

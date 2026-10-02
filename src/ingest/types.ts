@@ -40,7 +40,8 @@ export interface ChunkRecord {
   sourceKind: SourceKind;
   ordinal: number;
   text: string;
-  embedding: number[];
+  /** null = reaproveita o vetor já gravado (ver embedChunks.ts). */
+  embedding: number[] | null;
   /**
    * Quem falou, propagado da Message. Nulo para chunk que não vem de conversa
    * (Plan, TaskMemoryDoc) e para saída de ferramenta, que chega dentro de um

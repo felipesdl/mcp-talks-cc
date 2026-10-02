@@ -54,7 +54,7 @@ npm run db:stats
 
 `Chunk.sourceKind`: `conversation` (msgs user/assistant) | `plan` | `task_memory` | `decision` (destilado, ver [Distilação](#distilação)). Saída de ferramenta fica como nó `ToolCall`, sem embedding.
 
-Ingestão é **incremental** — `~/.cache/mcp-talks-cc/checkpoint.json` guarda `mtime + sha256` por arquivo. Re-rodar `npm run ingest` pula arquivos inalterados. Use `--force` pra reingerir tudo.
+Ingestão é **incremental** — `~/.cache/mcp-talks-cc/checkpoint.json` guarda `mtime + sha256` por arquivo. Re-rodar `npm run ingest` pula arquivos inalterados. Arquivo que mudou (sessão que cresceu) é relido inteiro, mas só passa pelo modelo o chunk novo ou com texto diferente: o resto reaproveita o vetor já gravado. `--force` re-embeda tudo (use ao trocar de modelo).
 
 ## Auto-ingest (SessionStart hook)
 
@@ -64,6 +64,7 @@ O wrapper:
 - checa a porta Bolt (`nc -z localhost 7687`) e, se estiver fechada, **sobe o container** (`docker compose up -d --wait`) antes de desistir (o driver não tem connect-timeout, daí o check de porta);
 - toma lock via `mkdir` de um lockdir com pidfile (não `flock`, que não existe no macOS), liberando por liveness do pid: run de horas não é roubado, e processo morto não bloqueia pra sempre;
 - roda `npm run ingest -- --source=all` (incremental);
+- limita o onnx a metade dos cores (`MCP_TALKS_BG=1`), pra não travar a máquina; `EMBED_THREADS=N` no `.env` fixa o número;
 - roda `npm run rebuild:similar` no máx 1x/20h, só se apareceu chunk novo;
 - escreve `~/.cache/mcp-talks-cc/health.json` em todo caminho de saída (`ok` / `neo4j-down` / `lock-held` / `failed`), que é o que o `session-primer.sh` lê pra injetar `[ALERTA mcp-talks-cc]` quando a memória está atrasada;
 - append com timestamp em `~/.cache/mcp-talks-cc/ingest.log`.
