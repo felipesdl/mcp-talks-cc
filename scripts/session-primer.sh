@@ -63,6 +63,11 @@ if [ -s "$HEALTH" ]; then
   elif [ "$STATUS" != "ok" ] && [ "$STATUS" != "lock-held" ]; then
     WARN="[ALERTA mcp-talks-cc] ultimo ingest terminou em status ${STATUS}; conferir ~/.cache/mcp-talks-cc/ingest.log. "
   fi
+# Sem health.json no primeiro SessionStart depois da instalação é corrida, não
+# falha: o ingest async começa junto com este hook e só grava o health ao
+# terminar. Lock presente ou log sem nenhum start = primeiro ingest rodando.
+elif [ -d "${CACHE}/ingest.lock.d" ] || ! grep -q '\[session-ingest\] start' "${CACHE}/ingest.log" 2>/dev/null; then
+  WARN="[mcp-talks-cc] primeiro ingest desta maquina em andamento: search_memory pode vir incompleto por alguns minutos. Nao precisa rodar ingest manual. "
 else
   WARN="[ALERTA mcp-talks-cc] sem health.json: o hook de ingest nunca completou nesta maquina. Conferir ~/.cache/mcp-talks-cc/ingest.log. "
 fi

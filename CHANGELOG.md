@@ -15,6 +15,13 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
+## 0.3.3 (2026-10-06)
+
+- Primer para de dar `[ALERTA]` falso no primeiro SessionStart depois da instalação. O ingest
+  async começa junto com o primer e só grava o `health.json` ao terminar, então "sem health"
+  ali é corrida, não falha. Com lock de ingest ativo ou log sem nenhum start, o primer agora
+  solta só um aviso de "primeiro ingest em andamento", sem mandar rodar ingest manual.
+
 ## 0.3.2 (2026-10-02)
 
 - Fim do pico de CPU ao abrir sessão. Arquivo que mudou (sessão que cresceu) era re-embedado
