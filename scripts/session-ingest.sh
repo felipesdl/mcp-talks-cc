@@ -166,8 +166,24 @@ fi
 # acervo velho, ou seja o benefício decai com o tempo. Roda direto, sem throttle:
 # o predicado por versão só toca o que falta e a varredura custa ~12s no acervo
 # inteiro. Fail-open, como o resto do hook.
-if [ "${new_chunks:-0}" -gt 0 ]; then
-  if [ -f "$HOME/.cache/mcp-talks-cc/value-model.json" ]; then
+#
+# O modelo mora no cache, não no repo: máquina nova ou cache limpo fica sem ele,
+# e pular em silêncio travava também o distill (pendingSessions exige chunk com
+# valueScore). Então, sem modelo, treina aqui (~20s, o hook é async). --strict
+# não grava modelo que não separa (grafo pequeno); aí tenta de novo na próxima.
+VALUE_MODEL="$HOME/.cache/mcp-talks-cc/value-model.json"
+trained_now=0
+if [ ! -f "$VALUE_MODEL" ]; then
+  log "train:value start (sem value-model.json)"
+  npm run train:value -- --apply --strict >> "$LOG" 2>&1
+  tcode=$?
+  log "train:value done (exit ${tcode})"
+  [ "$tcode" -eq 0 ] && [ -f "$VALUE_MODEL" ] && trained_now=1
+fi
+# Modelo recém-treinado tem versão nova: classifica o acervo inteiro mesmo sem
+# chunk novo, senão o que entrou sem score fica sem até a próxima sessão.
+if [ "${new_chunks:-0}" -gt 0 ] || [ "$trained_now" -eq 1 ]; then
+  if [ -f "$VALUE_MODEL" ]; then
     log "classify:chunks start"
     npm run classify:chunks -- --apply >> "$LOG" 2>&1
     log "classify:chunks done (exit $?)"

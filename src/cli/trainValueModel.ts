@@ -6,6 +6,12 @@ import { trainValueModel } from '../classify/train.ts';
 
 const out = join(config.paths.cacheDir, 'value-model.json');
 const apply = process.argv.includes('--apply');
+// --strict: modo do hook. Grafo pequeno (instalação nova) treina modelo que não
+// separa nada, e gravar isso rebaixaria chunk ao acaso. Sem os mínimos, sai 1
+// sem gravar e o hook tenta de novo quando o acervo crescer.
+const strict = process.argv.includes('--strict');
+const STRICT_MIN_HOLDOUT = 500;
+const STRICT_MIN_GAIN = 0.05;
 
 const model = await withSession((s) => trainValueModel(s));
 const m = model.metrics;
@@ -37,6 +43,14 @@ if (sc.length > 0) {
       `   ${t.toFixed(2)}  | ${String(sel.length).padStart(5)} (${((sel.length / sc.length) * 100).toFixed(0).padStart(2)}%) | ${(acerto * 100).toFixed(1)}% | ${errados}`,
     );
   }
+}
+
+if (strict && (m.nHoldout < STRICT_MIN_HOLDOUT || ganho < STRICT_MIN_GAIN)) {
+  console.log(
+    `\n(--strict: modelo NÃO gravado; precisa de ${STRICT_MIN_HOLDOUT}+ exemplos retidos e ganho >= ${STRICT_MIN_GAIN * 100} pontos)`,
+  );
+  await closeDriver();
+  process.exit(1);
 }
 
 if (apply) {

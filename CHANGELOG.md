@@ -15,6 +15,15 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
+## 0.3.4 (2026-10-07)
+
+- Hook recria o `value-model.json` quando ele não existe. O modelo mora em `~/.cache`, então
+  máquina nova ou cache limpo ficava sem ele, e o hook só logava "pulado": chunk novo entrava
+  sem `valueScore` (busca recente sem rebaixar narração) e o distill nunca achava sessão
+  elegível ("0 sessões" a cada run). Agora o hook treina (~20s, em background) e reclassifica
+  o acervo. `train:value --strict` não grava modelo que não separa (grafo pequeno): o hook
+  tenta de novo na próxima sessão.
+
 ## 0.3.3 (2026-10-06)
 
 - Primer para de dar `[ALERTA]` falso no primeiro SessionStart depois da instalação. O ingest
