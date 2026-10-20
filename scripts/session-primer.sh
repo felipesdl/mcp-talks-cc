@@ -49,20 +49,74 @@ fi
 # ── 2) aviso de saúde do ingest ─────────────────────────────────────────────
 # Texto ASCII e sem os caracteres | & " \ porque entra num sed sobre JSON.
 WARN=""
+# Comando que o Claude roda sozinho quando o alerta persiste. É o hook, não o
+# `npm run ingest` cru: ele sobe o runtime do Docker e o Neo4j, toma o lock
+# (não duplica com o run async desta sessão) e grava o health.
+case "$PROJECT_HINT" in
+  "em "*) HOOK_CMD="bash ${PROJECT_HINT#em }/scripts/session-ingest.sh" ;;
+  *) HOOK_CMD="bash scripts/session-ingest.sh ${PROJECT_HINT}" ;;
+esac
+# Mesma checagem do session-ingest.sh (host e porta do NEO4J_URI), com
+# fallback pra distro sem nc.
+NEO4J_URI_VAL="${NEO4J_URI:-}"
+if [ -z "$NEO4J_URI_VAL" ] && [ -f "${PROJECT_DIR}/.env" ]; then
+  NEO4J_URI_VAL="$(sed -nE 's/^NEO4J_URI=["]?([^"[:space:]]*).*/\1/p' "${PROJECT_DIR}/.env" | tail -1)"
+fi
+[ -z "$NEO4J_URI_VAL" ] && NEO4J_URI_VAL="bolt://localhost:7687"
+hostport="${NEO4J_URI_VAL#*://}"
+hostport="${hostport%%/*}"
+hostport="${hostport##*@}"
+NEO4J_HOST="${hostport%:*}"
+NEO4J_PORT="${hostport##*:}"
+[ "$NEO4J_PORT" = "$hostport" ] && NEO4J_PORT=7687
+NEO4J_HOST="${NEO4J_HOST#[}"
+NEO4J_HOST="${NEO4J_HOST%]}"
+bolt_up() {
+  if command -v nc >/dev/null 2>&1; then
+    nc -z "$NEO4J_HOST" "$NEO4J_PORT" 2>/dev/null
+  else
+    (exec 3<>"/dev/tcp/${NEO4J_HOST}/${NEO4J_PORT}") 2>/dev/null
+  fi
+}
 if [ -s "$HEALTH" ]; then
   STATUS="$(sed -nE 's/.*"status"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$HEALTH" | head -1)"
   LAST_OK="$(sed -nE 's/.*"lastOkEpoch"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$HEALTH" | head -1)"
   [ -z "$LAST_OK" ] && LAST_OK=0
   AGE=$(( $(date +%s) - LAST_OK ))
-  if [ "$LAST_OK" -eq 0 ] || [ "$AGE" -gt "$STALE_SECS" ]; then
-    # lastOkEpoch=0 é "nunca", não "há 20 mil dias".
-    if [ "$LAST_OK" -eq 0 ]; then LAST_TXT="nunca teve ingest ok"; else LAST_TXT="ultimo ingest ok ha $(( AGE / 86400 ))d"; fi
-    WARN="[ALERTA mcp-talks-cc] memoria DESATUALIZADA: ${LAST_TXT} (status atual: ${STATUS}). Avise o user na primeira resposta e sugira rodar npm run ingest -- --source=all ${PROJECT_HINT}. Resultados de search_memory nao cobrem conversas recentes. "
-  # lock-held é ingest em andamento, não falha (versões até 0.3.0 gravavam isso
-  # no skip; o dono do lock grava o status real ao terminar)
-  elif [ "$STATUS" != "ok" ] && [ "$STATUS" != "lock-held" ]; then
-    WARN="[ALERTA mcp-talks-cc] ultimo ingest terminou em status ${STATUS}; conferir ~/.cache/mcp-talks-cc/ingest.log. "
+  STALE=0
+  { [ "$LAST_OK" -eq 0 ] || [ "$AGE" -gt "$STALE_SECS" ]; } && STALE=1
+  # lastOkEpoch=0 é "nunca", não "há 20 mil dias".
+  if [ "$LAST_OK" -eq 0 ]; then
+    LAST_TXT="nunca teve ingest ok"
+  elif [ "$AGE" -lt 86400 ]; then
+    LAST_TXT="ultimo ingest ok ha $(( AGE / 3600 ))h"
+  else
+    LAST_TXT="ultimo ingest ok ha $(( AGE / 86400 ))d"
   fi
+  # O health é do run ANTERIOR (o desta sessão é async e começa junto). Bolt de
+  # pé ou lock presente = o run desta sessão já vai pôr em dia, não é alerta.
+  RECOVERING=0
+  { bolt_up || [ -d "${CACHE}/ingest.lock.d" ]; } && RECOVERING=1
+  DOWN_WARN="[ALERTA mcp-talks-cc] memoria possivelmente desatualizada: ${LAST_TXT} (status: ${STATUS}). O hook async desta sessao ja esta tentando subir o Neo4j sozinho: NAO peca pro user rodar nada e nao interrompa ele com isso. Antes do primeiro search_memory, leia ~/.cache/mcp-talks-cc/health.json: status ok com checkedEpoch recente, siga normal sem comentar. Senao rode voce mesmo, em background, ${HOOK_CMD} (o lock evita ingest duplicado) e so avise o user se falhar de novo, citando a ultima linha do ingest.log. "
+  case "$STATUS" in
+    # lock-held é ingest em andamento, não falha (versões até 0.3.0 gravavam
+    # isso no skip; o dono do lock grava o status real ao terminar). Health bom
+    # e só velho = ninguém abriu sessão no período: com o Bolt de pé, silêncio.
+    ok | lock-held)
+      [ "$STALE" -eq 1 ] && [ "$RECOVERING" -eq 0 ] && WARN="$DOWN_WARN"
+      ;;
+    neo4j-down | docker-down)
+      if [ "$RECOVERING" -eq 1 ]; then
+        WARN="[mcp-talks-cc] ingest automatico em andamento (${LAST_TXT}): search_memory pode nao cobrir as conversas mais recentes por alguns minutos. Nao precisa rodar nada nem avisar o user. "
+      else
+        WARN="$DOWN_WARN"
+      fi
+      ;;
+    # failed é erro do próprio ingest, não de infra: re-rodar não conserta
+    *)
+      WARN="[ALERTA mcp-talks-cc] ultimo ingest terminou em status ${STATUS}; conferir ~/.cache/mcp-talks-cc/ingest.log. "
+      ;;
+  esac
 # Sem health.json no primeiro SessionStart depois da instalação é corrida, não
 # falha: o ingest async começa junto com este hook e só grava o health ao
 # terminar. Lock presente ou log sem nenhum start = primeiro ingest rodando.

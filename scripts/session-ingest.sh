@@ -52,40 +52,190 @@ write_health() {
     mv "${HEALTH}.tmp" "$HEALTH" 2>/dev/null
 }
 
+# Onde o Neo4j mora vem do NEO4J_URI (env ganha do .env, como no `node
+# --env-file`; default igual ao src/config.ts). Com localhost:7687 fixo, URI
+# remota ou porta trocada virava "down" falso e o hook subia Docker à toa.
+NEO4J_URI_VAL="${NEO4J_URI:-}"
+if [ -z "$NEO4J_URI_VAL" ] && [ -f "${PROJECT_DIR}/.env" ]; then
+  NEO4J_URI_VAL="$(sed -nE 's/^NEO4J_URI=["]?([^"[:space:]]*).*/\1/p' "${PROJECT_DIR}/.env" | tail -1)"
+fi
+[ -z "$NEO4J_URI_VAL" ] && NEO4J_URI_VAL="bolt://localhost:7687"
+hostport="${NEO4J_URI_VAL#*://}"
+hostport="${hostport%%/*}"
+hostport="${hostport##*@}"
+NEO4J_HOST="${hostport%:*}"
+NEO4J_PORT="${hostport##*:}"
+[ "$NEO4J_PORT" = "$hostport" ] && NEO4J_PORT=7687 # URI sem porta
+NEO4J_HOST="${NEO4J_HOST#[}"
+NEO4J_HOST="${NEO4J_HOST%]}"
+case "$NEO4J_HOST" in
+  localhost | 127.0.0.1 | ::1 | 0.0.0.0) NEO4J_LOCAL=1 ;;
+  *) NEO4J_LOCAL=0 ;;
+esac
+
 # nc não vem em toda distro (Debian slim, Arch base). Sem fallback, ausência do
 # binário virava "neo4j-down" permanente com o banco de pé.
 neo4j_up() {
   if command -v nc >/dev/null 2>&1; then
-    nc -z localhost 7687 2>/dev/null
+    nc -z "$NEO4J_HOST" "$NEO4J_PORT" 2>/dev/null
   else
-    (exec 3<>/dev/tcp/localhost/7687) 2>/dev/null
+    (exec 3<>"/dev/tcp/${NEO4J_HOST}/${NEO4J_PORT}") 2>/dev/null
   fi
+}
+
+# timeout portátil: o macOS não traz `timeout` (só `gtimeout` via coreutils).
+# Sem nenhum dos dois roda sem teto, como antes.
+TO=""
+command -v timeout >/dev/null 2>&1 && TO="timeout"
+command -v gtimeout >/dev/null 2>&1 && TO="gtimeout"
+with_timeout() {
+  local secs="$1"
+  shift
+  if [ -n "$TO" ]; then "$TO" "$secs" "$@"; else "$@"; fi
+}
+
+# Context do Docker onde o container do Neo4j mora, anotado pelo próprio hook
+# quando acha o banco de pé. "-" = fora do Docker (nativo); vazio = nunca visto.
+RUNTIME_FILE="${LOG_DIR}/neo4j-runtime"
+CONTAINER="$(sed -nE 's/^[[:space:]]*container_name:[[:space:]]*([^[:space:]#]+).*/\1/p' docker-compose.yml 2>/dev/null | head -1)"
+[ -z "$CONTAINER" ] && CONTAINER="mcp-talks-neo4j"
+
+# Comando docker apontado pro context do Neo4j. Array, não função: `timeout`
+# não executa função do shell.
+DK_CTX=""
+set_dk() {
+  if [ -n "$DK_CTX" ]; then DK=(docker --context "$DK_CTX"); else DK=(docker); fi
+}
+set_dk
+
+docker_up() { with_timeout 10 "${DK[@]}" info >/dev/null 2>&1; }
+
+# Endpoint do daemon do context escolhido. Sem context, DOCKER_HOST ganha do
+# context ativo, igual ao próprio CLI.
+docker_endpoint() {
+  if [ -n "$DK_CTX" ]; then
+    with_timeout 5 docker context inspect "$DK_CTX" --format '{{.Endpoints.docker.Host}}' 2>/dev/null
+  elif [ -n "${DOCKER_HOST:-}" ]; then
+    echo "$DOCKER_HOST"
+  else
+    with_timeout 5 docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null
+  fi
+}
+
+# Comando que sobe o runtime por trás do endpoint. Genérico de propósito: o
+# hook não assume OrbStack nem Docker Desktop, deduz pelo socket do context.
+# MCP_TALKS_DOCKER_START (env ou .env) ganha de tudo, pra runtime que a
+# heurística não conhece. Daemon de sistema no Linux (/var/run/docker.sock)
+# precisa de root e já sobe no boot, então fica de fora.
+docker_start_cmd() {
+  local custom ep
+  custom="${MCP_TALKS_DOCKER_START:-}"
+  if [ -z "$custom" ] && [ -f "${PROJECT_DIR}/.env" ]; then
+    custom="$(sed -nE 's/^MCP_TALKS_DOCKER_START=(.*)$/\1/p' "${PROJECT_DIR}/.env" | tail -1)"
+    custom="${custom%\"}"
+    custom="${custom#\"}"
+  fi
+  if [ -n "$custom" ]; then
+    echo "$custom"
+    return
+  fi
+  ep="$(docker_endpoint)"
+  case "$ep" in
+    */.orbstack/*) command -v orb >/dev/null 2>&1 && echo "orb start" ;;
+    */.colima/*) command -v colima >/dev/null 2>&1 && echo "colima start" ;;
+    */.rd/*) command -v rdctl >/dev/null 2>&1 && echo "rdctl start" ;;
+    *podman*) command -v podman >/dev/null 2>&1 && echo "podman machine start" ;;
+    */run/user/*) command -v systemctl >/dev/null 2>&1 && echo "systemctl --user start docker" ;;
+    *)
+      # Docker Desktop: ~/.docker/run/docker.sock ou /var/run/docker.sock no macOS
+      if [ "$(uname -s)" = "Darwin" ] && [ -d /Applications/Docker.app ]; then
+        echo "open -ga Docker"
+      fi
+      ;;
+  esac
+}
+
+# Com o banco de pé, anota em qual context o container está. Só pergunta pra
+# daemon que já responde (o do Neo4j responde, ele está de pé): nunca sobe nada.
+# Nenhum context com o container = Neo4j fora do Docker.
+record_runtime() {
+  local ctx found=""
+  if command -v docker >/dev/null 2>&1; then
+    if [ -n "${DOCKER_HOST:-}" ]; then
+      with_timeout 5 docker ps -q --filter "name=^${CONTAINER}$" 2>/dev/null | grep -q . && found="@DOCKER_HOST"
+    else
+      for ctx in $(with_timeout 5 docker context ls -q 2>/dev/null); do
+        if with_timeout 5 docker --context "$ctx" ps -q --filter "name=^${CONTAINER}$" 2>/dev/null | grep -q .; then
+          found="$ctx"
+          break
+        fi
+      done
+    fi
+  fi
+  echo "${found:--}" > "$RUNTIME_FILE" 2>/dev/null
 }
 
 # ── Neo4j: sobe em vez de desistir ──────────────────────────────────────────
 # O driver não tem connect-timeout, então checamos a porta Bolt antes.
+# Sessão aberta logo depois do boot pega o runtime do Docker ainda parado (sem
+# start no login): sobe ele primeiro, senão o compose falha e o primer alerta.
+# Só mexe no runtime onde o Neo4j mora: remoto ou nativo não liga daemon nenhum.
+DOCKER_TRIED=0
 if ! neo4j_up; then
-  if command -v docker >/dev/null 2>&1; then
-    log "neo4j down (7687 fechada), subindo container"
-    TO=""
-    command -v timeout >/dev/null 2>&1 && TO="timeout 240"
-    command -v gtimeout >/dev/null 2>&1 && TO="gtimeout 240"
-    # shellcheck disable=SC2086
-    $TO docker compose up -d --wait >> "$LOG" 2>&1
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      neo4j_up && break
-      sleep 2
-    done
-  else
+  RT="$(cat "$RUNTIME_FILE" 2>/dev/null || true)"
+  if [ "$NEO4J_LOCAL" -eq 0 ]; then
+    log "neo4j remoto (${NEO4J_HOST}:${NEO4J_PORT}) fora do ar, não sobe nada local"
+  elif [ "$RT" = "-" ]; then
+    log "neo4j local fora do Docker (nativo) e fora do ar, não mexe em daemon"
+  elif ! command -v docker >/dev/null 2>&1; then
     log "neo4j down e docker ausente no PATH"
+  else
+    DOCKER_TRIED=1
+    # sem anotação (instalação nova) vai no context ativo, que é onde o compose
+    # criaria o container; context anotado e depois removido também
+    case "$RT" in
+      "" | @DOCKER_HOST) DK_CTX="" ;;
+      *) DK_CTX="$RT" ;;
+    esac
+    if [ -n "$DK_CTX" ] && ! with_timeout 5 docker context inspect "$DK_CTX" >/dev/null 2>&1; then
+      DK_CTX=""
+    fi
+    set_dk
+    if ! docker_up; then
+      start_cmd="$(docker_start_cmd)"
+      if [ -n "$start_cmd" ]; then
+        log "docker daemon fora (context: ${DK_CTX:-ativo}), subindo runtime: ${start_cmd}"
+        with_timeout 120 sh -c "$start_cmd" >> "$LOG" 2>&1
+        # `open -ga Docker` volta na hora; o daemon leva até ~1min pra responder
+        for _ in $(seq 1 45); do
+          docker_up && break
+          sleep 2
+        done
+      else
+        log "docker daemon fora e runtime não identificado (endpoint: $(docker_endpoint)); defina MCP_TALKS_DOCKER_START no .env"
+      fi
+    fi
+    if docker_up; then
+      log "neo4j down (${NEO4J_HOST}:${NEO4J_PORT} fechada), subindo container (context: ${DK_CTX:-ativo})"
+      with_timeout 240 "${DK[@]}" compose up -d --wait >> "$LOG" 2>&1
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        neo4j_up && break
+        sleep 2
+      done
+    fi
   fi
 fi
 
 if ! neo4j_up; then
   log "neo4j indisponível, skip"
-  write_health "neo4j-down" "porta 7687 fechada apos tentativa de up"
+  if [ "$DOCKER_TRIED" -eq 1 ] && ! docker_up; then
+    write_health "docker-down" "daemon do docker nao respondeu apos tentativa de start"
+  else
+    write_health "neo4j-down" "${NEO4J_HOST}:${NEO4J_PORT} fechada apos tentativa de up"
+  fi
   exit 0
 fi
+[ "$NEO4J_LOCAL" -eq 1 ] && record_runtime
 
 # ── Lock: mkdir é atômico em POSIX (flock não existe no macOS) ───────────────
 # Evita empilhar ingests concorrentes: cada sessão Claude dispara este hook e

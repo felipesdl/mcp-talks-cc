@@ -15,6 +15,24 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
+## 0.4.2 (2026-10-20)
+
+- **Hook sobe o runtime do Docker** quando o daemon não responde (sessão aberta logo depois do
+  boot, antes do Docker iniciar). Antes ele só tentava o `compose up`, falhava e o primer
+  alertava `neo4j-down` até a próxima sessão. Só mexe onde o Neo4j mora: com o banco de pé o
+  hook anota em qual `docker context` está o container (só `docker ps` em daemon que já
+  responde) e, quando cai, sobe aquele runtime e roda o compose naquele context. Neo4j nativo
+  ou remoto não liga daemon nenhum. O comando de start sai do socket do context (OrbStack,
+  Colima, Rancher Desktop, Podman machine, Docker Desktop no macOS, dockerd rootless); outro
+  runtime vai por `MCP_TALKS_DOCKER_START` no `.env`. Daemon que não sobe vira status
+  `docker-down`, separado de `neo4j-down`.
+- Hooks checam host e porta do `NEO4J_URI` em vez de `localhost:7687` fixo.
+- **Primer sem alerta falso**: o health é do run anterior, então com a porta Bolt aberta ou
+  ingest rodando ele não alerta (só um aviso leve se o último run tinha caído).
+- **Alerta não vira tarefa do user**: o Claude confere o `health.json` e, se precisar, roda o
+  próprio `session-ingest.sh` em background. Bloco do CLAUDE.md vai pra v5 (o primer pergunta
+  se aplica).
+
 ## 0.4.1 (2026-10-15)
 
 - Vínculo task -> epic com Haiku vira **opt-in próprio** (`MCP_TALKS_EPIC_LLM`), separado da

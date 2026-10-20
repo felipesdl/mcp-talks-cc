@@ -12,7 +12,7 @@ MCP local que indexa toda a memória do Claude Code (conversas + plans + task me
 ## Pré-requisitos
 
 - **Node >= 22.13** (usa `--experimental-strip-types`, sem build step)
-- **Docker** + `docker compose` (Neo4j sobe em container). No macOS com OrbStack, deixe ele iniciar com o login (`orb config set app.start_at_login true`): o hook sobe o container sozinho, mas não o Docker
+- **Docker** + `docker compose` (Neo4j sobe em container). Se o runtime estiver parado (sessão aberta logo depois do boot), o hook sobe só o runtime onde o container do Neo4j mora (ele anota o `docker context` quando acha o banco de pé; sem anotação, usa o context ativo), deduzindo o comando pelo socket: OrbStack, Colima, Rancher Desktop, Podman machine, Docker Desktop (macOS) e dockerd rootless. Outro runtime: `MCP_TALKS_DOCKER_START="<comando>"` no `.env`. Neo4j remoto (`NEO4J_URI`) ou nativo (fora do Docker) não liga daemon nenhum. Daemon de sistema no Linux não entra (precisa de root e já sobe no boot)
 - **Claude Code CLI** no PATH (`claude`) — o `install.sh` usa `claude mcp add`
 - ~2GB de disco: imagem Neo4j + store do grafo + modelo bge-m3 q8 (~150MB em `~/.cache/huggingface/`)
 
@@ -63,11 +63,11 @@ Ingestão é **incremental** — `~/.cache/mcp-talks-cc/checkpoint.json` guarda 
 O ingest roda sozinho a cada abertura de sessão do Claude Code. Um hook `SessionStart` em `~/.claude/settings.json` dispara `scripts/session-ingest.sh` em background (`async: true`, não atrasa o boot da sessão).
 
 O wrapper:
-- checa a porta Bolt (`nc -z localhost 7687`) e, se estiver fechada, **sobe o container** (`docker compose up -d --wait`) antes de desistir (o driver não tem connect-timeout, daí o check de porta);
+- checa a porta Bolt (host e porta do `NEO4J_URI`, default `localhost:7687`) e, se estiver fechada e o Neo4j for local em Docker, **sobe o runtime** onde o container mora se o daemon não responder (ver Pré-requisitos) e depois **o container** (`docker compose up -d --wait` naquele context) antes de desistir (o driver não tem connect-timeout, daí o check de porta). Com o banco de pé, anota o context em `~/.cache/mcp-talks-cc/neo4j-runtime` (`-` = fora do Docker);
 - toma lock via `mkdir` de um lockdir com pidfile (não `flock`, que não existe no macOS), liberando por liveness do pid: run de horas não é roubado, e processo morto não bloqueia pra sempre;
 - roda `npm run ingest -- --source=all` (incremental);
 - limita o onnx a metade dos cores (`MCP_TALKS_BG=1`), pra não travar a máquina; `EMBED_THREADS=N` no `.env` fixa o número;
-- escreve `~/.cache/mcp-talks-cc/health.json` (`ok` / `neo4j-down` / `failed`), que é o que o `session-primer.sh` lê pra injetar `[ALERTA mcp-talks-cc]` quando a memória está atrasada. Run que pula por lock de outro ingest não grava nada (o dono do lock grava);
+- escreve `~/.cache/mcp-talks-cc/health.json` (`ok` / `docker-down` / `neo4j-down` / `failed`), que é o que o `session-primer.sh` lê pra injetar `[ALERTA mcp-talks-cc]` quando a memória está atrasada. Run que pula por lock de outro ingest não grava nada (o dono do lock grava). Como o health é do run anterior, o primer confere a porta Bolt e o lock na hora: com o Neo4j de pé ou ingest rodando, não alerta. Quando alerta, o Claude roda o próprio hook em background em vez de pedir pro user;
 - classificação de valor: chunk novo ganha `valueScore` (entrega x narração). Sem `value-model.json` (máquina nova, cache limpo) treina antes (`train:value --strict`, ~20s; não grava modelo que não separa);
 - com chunk novo: `build:entities` (Task, File, planos), `link:epics --no-llm` (vínculo task -> epic sem custo) e `rebuild:similar` (no máx 1x/20h);
 - `self-tune` (grada as buscas da sessão anterior, recalibra `confidence` e o gate);
@@ -274,8 +274,8 @@ O repo não carrega o estado. Copie, além de clonar:
 | tuning aprendido | `~/.cache/mcp-talks-cc/tuning.json` | volta pro default (ex. `valueDemote` neutro: sem rebaixar narração) |
 | modelo de valor | `~/.cache/mcp-talks-cc/value-model.json` | o hook treina de novo sozinho (~20s) |
 
-Depois: `./scripts/install.sh` (idempotente) e abrir uma sessão nova. Ligue o Docker no login
-(ver Pré-requisitos), senão todo boot começa com `[ALERTA] neo4j-down`.
+Depois: `./scripts/install.sh` (idempotente) e abrir uma sessão nova. O hook sobe o runtime do
+Docker se ele estiver parado (ver Pré-requisitos).
 
 ## Schema Neo4j
 

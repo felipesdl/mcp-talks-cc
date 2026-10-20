@@ -10,7 +10,7 @@ literal, então funciona pra qualquer prefixo.
 
 ---
 
-<!-- mcp-talks-cc:snippet v4 (npm run upgrade compara esta versão) -->
+<!-- mcp-talks-cc:snippet v5 (npm run upgrade compara esta versão) -->
 ## Memória cross-conversa (MCP `mcp-talks-cc`)
 
 O server MCP se chama `mcp-talks-cc` (tools no formato `mcp__mcp-talks-cc__*`). Sempre referir a ele por esse nome, nunca "memory". MCP local indexa conversas Claude Code passadas, plans, todos e task memory em Neo4j com busca vetorial. Tools: `search_memory`, `expand_hits`, `get_session_transcript`, `find_related_plans`, `find_decisions`, `list_project_activity`, `recall_task`. Resources: `memory://stats`, `memory://schema`, `memory://profile` (perfil aprendido pelo self-tune; use pra responder "oq vc aprendeu de mim").
@@ -85,13 +85,15 @@ Cada hit vem com `conf=` (e `score=` no `detail: 'full'`). **São coisas diferen
 
 ### Ingest: automático, com alarme
 
-O hook SessionStart ingere sozinho (incremental, sobe o Neo4j se estiver parado, lock por pid). **Não existe re-ingest manual de rotina.**
+O hook SessionStart ingere sozinho (incremental, sobe o runtime do Docker e o Neo4j se estiverem parados, lock por pid). **Não existe re-ingest manual de rotina, e nunca peça pro user rodar ingest.**
 
-Se o primer trouxer uma linha `[ALERTA mcp-talks-cc]`, a memória está desatualizada ou o ingest falhou: avise na primeira resposta e rode
+Se o primer trouxer uma linha `[ALERTA mcp-talks-cc]`, siga o que ela diz: confira `~/.cache/mcp-talks-cc/health.json` antes do primeiro `search_memory` e, se ainda não estiver `ok`, rode você mesmo em background
 
 ```bash
-cd /ABSOLUTE/PATH/TO/mcp-talks-cc && npm run ingest -- --source=all
+bash /ABSOLUTE/PATH/TO/mcp-talks-cc/scripts/session-ingest.sh
 ```
+
+(o lock evita duplicar com o run desta sessão). Só avise o user se falhar de novo, com a última linha do `ingest.log`. Aviso `[mcp-talks-cc] ingest automatico em andamento` não pede ação.
 
 Diagnóstico: `~/.cache/mcp-talks-cc/health.json` (status + último ok) e `ingest.log`.
 
