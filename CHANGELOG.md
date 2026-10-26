@@ -15,6 +15,15 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
+## 0.4.3 (2026-10-22)
+
+- MCP server não pré-carrega mais o bge-m3 ao subir: carrega na 1ª busca ou no 1º push. Só o
+  server que atende os hooks (1º socket vivo) fica com o modelo na RAM; sessões ociosas ficam
+  leves. A 1ª busca de uma sessão fria leva alguns segundos. `MCP_TALKS_PRELOAD=1` restaura o
+  preload.
+- Hook de ingest roda com prioridade baixa de CPU e disco (`nice -n 19` + `ionice -c3` no
+  Linux, `taskpolicy -b` no macOS; sem elas, roda normal). `MCP_TALKS_LOWPRI=0` desliga.
+
 ## 0.4.2 (2026-10-20)
 
 - **Hook sobe o runtime do Docker** quando o daemon não responde (sessão aberta logo depois do
