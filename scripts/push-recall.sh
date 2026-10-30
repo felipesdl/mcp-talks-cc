@@ -39,14 +39,56 @@ fi
 command -v curl >/dev/null 2>&1 || exit 0
 [ -d "$SOCK_DIR" ] || exit 0
 
-for s in "$SOCK_DIR"/*.sock; do
-  [ -S "$s" ] || continue
+# Prazo TOTAL, não por socket: cada sessão aberta tem o próprio server, e com a
+# máquina em swap vários demoram >1s. Com 1s por socket, 3 lentos seguidos já
+# estouravam o timeout de 3s do hook. Server saudável responde em <850ms
+# (BUDGET_MS em warmSocket.ts), então 1 tentativa cheia + sobra cabe aqui.
+# Sobra ~0,5s pro overhead de bash/curl em swap (medido: 2s de prazo = 2,5s).
+DEADLINE_MS=1700
+PER_TRY_MS=1000
+SPENT_MS=0
+# pid do último server que respondeu: tenta ele primeiro. É o que já tem o
+# bge-m3 quente; a ordem do glob é alfabética e acertava server frio.
+LAST_FILE="${SOCK_DIR}/last"
+
+try_sock() {
+  local s="$1" pid left mt res rc t sec frac
+  [ -S "$s" ] || return 1
   pid="$(basename "$s" .sock)"
-  kill -0 "$pid" 2>/dev/null || continue
-  if OUT="$(printf '%s' "$INPUT" | curl -s --max-time 1 --unix-socket "$s" \
-      -X POST --data-binary @- "http://mcp/${ROUTE}" 2>/dev/null)"; then
-    [ -n "$OUT" ] && printf '%s\n' "$OUT"
+  kill -0 "$pid" 2>/dev/null || return 1
+  left=$((DEADLINE_MS - SPENT_MS))
+  [ "$left" -lt 150 ] && return 1
+  mt=$PER_TRY_MS
+  [ "$left" -lt "$mt" ] && mt=$left
+  res="$(printf '%s' "$INPUT" | curl -s -w '\n%{time_total}' \
+    --max-time "$(printf '%d.%03d' $((mt / 1000)) $((mt % 1000)))" \
+    --unix-socket "$s" -X POST --data-binary @- "http://mcp/${ROUTE}" 2>/dev/null)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    res="${res%$'\n'*}"
+    [ -n "$res" ] && printf '%s\n' "$res"
+    if [ "$(cat "$LAST_FILE" 2>/dev/null)" != "$pid" ]; then
+      printf '%s' "$pid" > "${LAST_FILE}.$$" 2>/dev/null && mv -f "${LAST_FILE}.$$" "$LAST_FILE" 2>/dev/null
+    fi
     exit 0
   fi
+  # time_total do curl ("1.001234") em ms; sem ele, conta a tentativa cheia
+  t="${res##*$'\n'}"
+  case "$t" in
+    [0-9]*.[0-9]*)
+      sec="${t%%.*}"
+      frac="${t#*.}000"
+      SPENT_MS=$((SPENT_MS + 10#$sec * 1000 + 10#${frac:0:3}))
+      ;;
+    *) SPENT_MS=$((SPENT_MS + mt)) ;;
+  esac
+  return 1
+}
+
+LAST="$(cat "$LAST_FILE" 2>/dev/null)"
+[ -n "$LAST" ] && try_sock "${SOCK_DIR}/${LAST}.sock"
+for s in "$SOCK_DIR"/*.sock; do
+  [ "$s" = "${SOCK_DIR}/${LAST}.sock" ] && continue
+  try_sock "$s"
 done
 exit 0
