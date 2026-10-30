@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { getEmbedder } from '../embeddings/localEmbedder.ts';
+import { getEmbedder, setEmbedderIdleUnload } from '../embeddings/localEmbedder.ts';
 import { closeDriver } from '../neo4j/driver.ts';
 import { registerSearchMemoryTool } from './tools/searchMemory.ts';
 import { registerGetSessionTranscriptTool } from './tools/getSessionTranscript.ts';
@@ -42,14 +42,20 @@ await server.connect(new StdioServerTransport());
 console.error('[mcp] mcp-talks-cc server connected (stdio)');
 
 // Embedder carrega sob demanda (1ª busca ou 1º push). Cada sessão do Claude Code
-// sobe o próprio server, e os hooks de push só falam com o 1º socket vivo
-// (scripts/push-recall.sh): pré-carregar em todos custava ~450-700MB de RAM por
-// sessão aberta, e empurrava a máquina pro swap. MCP_TALKS_PRELOAD=1 volta ao
-// preload. Nunca bloqueia o server.connect acima: o cold load do bge-m3 leva
+// sobe o próprio server, e os hooks de push preferem o último socket que
+// respondeu (scripts/push-recall.sh): pré-carregar em todos custava ~450-700MB de
+// RAM por sessão aberta, e empurrava a máquina pro swap. MCP_TALKS_PRELOAD=1 volta
+// ao preload. Nunca bloqueia o server.connect acima: o cold load do bge-m3 leva
 // 30-60s e estouraria o handshake do initialize.
-if (process.env.MCP_TALKS_PRELOAD === '1') {
+const preload = process.env.MCP_TALKS_PRELOAD === '1';
+if (preload) {
   void getEmbedder().catch((e) => console.error('[mcp] embedder preload failed:', e));
 }
+
+// Descarrega o modelo após N min sem embed. Default 15, ou 0 (nunca) com preload,
+// que pediu modelo sempre quente. MCP_TALKS_EMBED_IDLE_MIN explícito vence.
+const idleMin = Number(process.env.MCP_TALKS_EMBED_IDLE_MIN ?? (preload ? 0 : 15));
+if (Number.isFinite(idleMin) && idleMin > 0) setEmbedderIdleUnload(idleMin * 60_000);
 
 // Socket local pros hooks de push (UserPromptSubmit/PostToolUse). Desligável
 // com MCP_TALKS_DISABLE_PUSH=1 (a suite desliga).
