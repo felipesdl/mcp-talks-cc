@@ -304,7 +304,7 @@ Antes de embedar, redactor remove tokens/keys comuns (OpenAI/Anthropic/GitHub/Be
 
 ## Limitações conhecidas (MVP)
 
-- Embed cold-start (~30-60s primeira invocação por causa do bge-m3 q8). MCP server carrega o modelo sob demanda (1ª busca ou push); `MCP_TALKS_PRELOAD=1` pré-carrega no boot.
+- Embed cold-start (~30-60s primeira invocação por causa do bge-m3 q8). MCP server carrega o modelo sob demanda (1ª busca ou push) e descarrega após 15 min ocioso; `MCP_TALKS_PRELOAD=1` pré-carrega no boot.
 - Tool calls (Bash outputs etc.) **não** são embedados — só ficam como nodes `ToolCall` rastreáveis via Cypher.
 - Busca e ranking não usam LLM. LLM (Haiku via `claude -p`) só roda offline, no hook e com opt-in: distilação e vínculo task -> epic.
 - Task que nunca passou por conversa nem plano fica sem epic (e também sem regra pra cruzar).
@@ -325,6 +325,7 @@ O MCP server carrega o bge-m3 sob demanda. Os hooks de push falam com o primeiro
 |---|---|---|
 | `EMBED_THREADS=N` | threads do onnx, no hook e no server | hook: metade dos cores; server: todos |
 | `MCP_TALKS_PRELOAD=1` | server carrega o modelo ao subir | desligado |
+| `MCP_TALKS_EMBED_IDLE_MIN=N` | server descarrega o modelo após N min sem busca nem push (`0` nunca) | 15 (0 com preload) |
 | `MCP_TALKS_LOWPRI=0` | desliga nice/ionice/taskpolicy no hook de ingest (vale no `.env` ou no ambiente) | ligado |
 | `MCP_TALKS_DISTILL=0\|1` | distilação automática (gasta tokens) | desligado |
 | `MCP_TALKS_EPIC_LLM=1` | vínculo task -> epic com Haiku no hook (~2k tokens por sessão que cita epic; sem a linha, segue a distilação) | segue `MCP_TALKS_DISTILL` |

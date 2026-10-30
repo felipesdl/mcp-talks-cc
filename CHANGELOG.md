@@ -15,6 +15,19 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
+## 0.4.4 (2026-10-30)
+
+- **Hook de push não estoura mais o timeout de 3s** (`UserPromptSubmit hook ... timed out`).
+  Antes ele tentava os sockets em ordem alfabética com 1s cada, e com várias sessões abertas
+  e a máquina em swap, 3 servers lentos seguidos já passavam de 3s. Agora tem prazo total de
+  1,7s, e começa pelo último server que respondeu (`~/.cache/mcp-talks-cc/sock/last`), que é
+  o que já tem o modelo quente.
+- MCP server descarrega o bge-m3 após 15 min sem busca nem push (o malloc cai de ~1,5GB pra
+  ~23MB); o próximo uso recarrega em ~1s. `MCP_TALKS_EMBED_IDLE_MIN=N` ajusta, `0` desliga.
+  Com `MCP_TALKS_PRELOAD=1` o padrão é não descarregar.
+- Recomendado: subir o `timeout` dos hooks `push-recall.sh` no `~/.claude/settings.json` de 3
+  pra 5 (folga, o script já sai antes de 3s).
+
 ## 0.4.3 (2026-10-22)
 
 - MCP server não pré-carrega mais o bge-m3 ao subir: carrega na 1ª busca ou no 1º push. Só o
