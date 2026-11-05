@@ -8,7 +8,7 @@ soft boost no ranking, score reportado fica raw.
 O tuner só propõe com a calibração de echo pronta. Sem ela todo credit por hit é 0 por
 construção (`applyCalibration` devolve null, `grade.ts` cai no `?? 0`), e `1 + 0.3 * (0 -
 meanUtility)` transformava zero estrutural em penalidade nas fontes mais usadas — medido em
-2026-08-24: 198 hitCredits todos 0 propondo 0.936 em `conversation`/`px-painel`.
+2026-08-24: 198 hitCredits todos 0 propondo 0.936 em `conversation`/`web-panel`.
 
 **Atualização 2026-09-29 (v3):** as duas evoluções abaixo foram construídas, com uma mudança
 de premissa. A distilação não espera mais grade: seleciona por estrutura (sessão fechada com

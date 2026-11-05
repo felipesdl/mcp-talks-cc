@@ -21,7 +21,7 @@ process.env.MCP_TALKS_DISABLE_QUERY_LOG = '1';
  *   antes do nó de Task : hitRate@8 81,1%  MRR 0,667  narração@8 20,2%
  *   depois              : hitRate@8 99,3%  MRR 0,976  narração@8  8,3%
  *
- * A única falha restante (US-372) não é defeito: a busca devolve conteúdo da
+ * A única falha restante (US-100) não é defeito: a busca devolve conteúdo da
  * task vindo de três OUTRAS sessões que também trabalharam nela, e o que o
  * invariante cobra é justamente a sessão cuja branch carrega o código. É
  * limitação da métrica, e afrouxá-la para fechar 100% seria fabricar sucesso.

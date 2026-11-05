@@ -103,8 +103,8 @@ export const DECISION_BOOST = Number(process.env.MCP_TALKS_DECISION_BOOST ?? 1.2
 
 /**
  * Teto de hits da MESMA sessão no top-k. O MMR diversifica por embedding, não
- * por sessão: medido em 2026-09-29, "fila de espera contrato espelho" devolveu
- * 8 de 8 hits da EDC-3291. Pra recall o que importa é cobrir sessões distintas,
+ * por sessão: medido em 2026-09-29, "fila de reprocesso do pedido" devolveu
+ * 8 de 8 hits da EDC-1300. Pra recall o que importa é cobrir sessões distintas,
  * e o resto da sessão está a um expand_hits/get_session_transcript de distância.
  *
  * Medido no bench:recall (37 casos, sem decisions), teto 0 → 2 → 1:

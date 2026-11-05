@@ -76,7 +76,7 @@ está na memória.
     (bloco do CLAUDE.md v4);
   - Haiku lendo só os trechos em volta de "épico/parent/pai" (~2k tokens por sessão, opt-in junto
     com a distilação, 5 sessões por SessionStart);
-  - regex no caso inequívoco ("Épico EDC-3208" com 1 task na sessão), sem custo.
+  - regex no caso inequívoco ("Épico EDC-1001" com 1 task na sessão), sem custo.
   Medido contra o Jira: 20/20 vínculos certos. O Haiku só troca o pai dado por outra fonte com
   confiança high (em medium ele confundiu PRD com epic). Projeto meta (o próprio mcp-talks-cc)
   não é fonte: tem keys de exemplo. Epic balde (Bugs, Débitos técnicos) não forma família;

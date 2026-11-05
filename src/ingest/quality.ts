@@ -145,7 +145,7 @@ export function gistOf(text: string, max: number = GIST_CHARS): string {
     .replace(/\s+/g, ' ')
     .trim();
   // Chunk que não é o primeiro da mensagem começa com a cauda de 150 chars do
-  // overlap, muitas vezes no meio de uma palavra ("iveCandidatesOnFreight`").
+  // overlap, muitas vezes no meio de uma palavra ("iveItemsOnOrder`").
   // Começo em minúscula = fragmento: pula até a primeira fronteira de frase.
   if (/^[a-zà-ú`),.;]/.test(t)) {
     const m = /[.!?:]\s+(?=\S)|\s-\s/.exec(t.slice(0, 220));

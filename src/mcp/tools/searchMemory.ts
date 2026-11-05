@@ -115,7 +115,7 @@ export interface SearchHit {
  */
 export const LITERAL_TOKEN_RE = new RegExp(
   [
-    '\\b[A-Z]{2,}-\\d+\\b', // EDC-2410
+    '\\b[A-Z]{2,}-\\d+\\b', // EDC-1410
     '\\b[\\w/.-]+\\.(?:ts|tsx|js|jsx|mjs|php|md|py|go|rb|sql|json|ya?ml|sh|css|scss)\\b', // path/arquivo
     '\\b[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*\\b', // camelCase: useEffect, projectBoost
     '\\b[a-z][a-z0-9]*_[a-z0-9_]+\\b', // snake_case
@@ -163,9 +163,9 @@ export function recencyMult(
  * Query lexical a partir SÓ dos tokens literais, cada um como frase exata.
  *
  * O escape antigo (`q.replace(/[+\-...]/g, '\\$&')`) preservava o hífen como
- * caractere mas não como separador: o analyzer padrão quebrava `EDC\-3197` em
+ * caractere mas não como separador: o analyzer padrão quebrava `EDC\-1200` em
  * `EDC` OR `3197`, então a busca casava todo chunk que citasse qualquer EDC.
- * Medido: `EDC\-3197` batia em 500 chunks (o pool inteiro), `"EDC-3197"` bate
+ * Medido: `EDC\-1200` batia em 500 chunks (o pool inteiro), `"EDC-1200"` bate
  * em 15, que é exatamente o `CONTAINS` real. Com tudo casando, o BM25 não
  * discriminava nada e o sinal lexical virava ruído uniforme.
  *
@@ -242,7 +242,7 @@ interface Candidate extends PreCandidate {
  * puro. Como o cosseno do bge-m3 vive comprimido em ~0.82-0.89 e o BM25
  * saturado gira em torno de 0.5, misturar ABAIXAVA o score: casar lexicalmente
  * virava penalidade, e um chunk sem match nenhum guardava o vec inteiro. Na
- * busca por `EDC-3197` o plano da própria task caía pro rank 349 enquanto os
+ * busca por `EDC-1200` o plano da própria task caía pro rank 349 enquanto os
  * finalistas são os 25 primeiros.
  *
  * RRF compara posições, não magnitudes, então as duas escalas deixam de
@@ -277,7 +277,7 @@ function normalizeRelevance(values: number[]): number[] {
  * Sessões da task que a PRÓPRIA QUERY nomeia.
  *
  * Diferente do boost por chamador: aqui o vínculo é explícito, o usuário
- * escreveu `EDC-3197`. Antes disto, achar a sessão daquela task dependia de o
+ * escreveu `EDC-1200`. Antes disto, achar a sessão daquela task dependia de o
  * cosseno e o BM25 colocarem um chunk dela no top-k, e isso falhava justamente
  * onde mais dói: as 28 falhas medidas eram todas de sessões de janeiro a maio,
  * com 33 chunks de média contra 84 das demais. Memória antiga e magra deixava
@@ -565,7 +565,7 @@ export async function searchMemory(args: {
       // um hit de BM25 fora do top-N vetorial era calculado, saturado, posto no
       // ftMap e descartado em silêncio: na prática o "hybrid" era recall
       // vetorial com rerank lexical, e casar o token literal nunca recrutava
-      // ninguém. Medido em `EDC-3197`: dos 500 hits de fulltext, só 155 caíam
+      // ninguém. Medido em `EDC-1200`: dos 500 hits de fulltext, só 155 caíam
       // no pool vetorial.
       // Terceira fonte de RECALL, não de reordenação. Boost não resgata o que
       // nunca entrou no pool: as sessões antigas e magras de uma task não

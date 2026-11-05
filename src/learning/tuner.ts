@@ -122,7 +122,7 @@ export function buildTuningProposal(
   // credit por hit cai no `?? 0` (grading/grade.ts). Utility observada vira 0 por
   // construção, não por medição, e `1 + 0.3 * (0 - meanUtility)` transforma isso
   // em PENALIDADE nas fontes mais usadas. Medido em 2026-08-24: 198 hitCredits
-  // todos 0, propondo 0.936 em conversation, px-painel e px-mobile-motorista, que
+  // todos 0, propondo 0.936 em conversation, web-panel e mobile-app, que
   // são 78% do tráfego real. Todo campo proposto abaixo (perSourceKind,
   // perProject, projectBoost) deriva de credit, então nesse estado não existe
   // proposta honesta a fazer — só `k`, que é passthrough do tuning atual.

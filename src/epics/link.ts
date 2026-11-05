@@ -15,8 +15,8 @@ import { META_PROJECTS } from '../mcp/tuning.ts';
 /**
  * Vínculo task -> pai (epic/story), a partir do que já está na memória.
  *
- * Não acessa o Jira. A hierarquia já aparece nas conversas ("Épico EDC-3208",
- * "Parent: EDC-2491"), nos planos e na task memory; falta só virar aresta pra
+ * Não acessa o Jira. A hierarquia já aparece nas conversas ("Épico EDC-1001",
+ * "Parent: EDC-900"), nos planos e na task memory; falta só virar aresta pra
  * cruzar repos: a task do back e a do front são filhas do mesmo epic.
  *
  * Três fontes, gravando o mesmo resultado, em ordem de confiança:
@@ -29,7 +29,7 @@ import { META_PROJECTS } from '../mcp/tuning.ts';
  *
  * Uma task tem no máximo 1 PART_OF. Conflito: fonte de rank maior vence, e no
  * empate a evidência mais recente. Exceção: trocar o PAI dado por outra fonte
- * exige confiança high (medido: o Haiku em medium trocou "Épico EDC-3338" pelo
+ * exige confiança high (medido: o Haiku em medium trocou "Épico EDC-1500" pelo
  * PRD citado na mesma linha). Tudo MERGE + SET absoluto.
  */
 
@@ -132,7 +132,7 @@ export async function collectUnits(s: Session): Promise<Unit[]> {
     OPTIONAL MATCH (n)-[:ABOUT_TASK]->(t:Task)
     RETURN id, collect(DISTINCT t.key) AS tasks, n.epicLinkVersion AS v, n.epicLinkAt AS at`);
   // O próprio mcp-talks-cc discute esses formatos com keys de EXEMPLO
-  // ("[task] EDC-3309 pai=EDC-3208", e a EDC-3309 não tem pai no Jira). Fonte
+  // ("[task] EDC-1002 pai=EDC-1001", e a EDC-1002 não tem pai no Jira). Fonte
   // de vínculo só é trabalho de verdade.
   return [...units.values()].filter((u) => !isMetaUnit(u));
 }
@@ -226,15 +226,15 @@ export function buildLlmInput(u: Unit): string {
 const SYSTEM_PROMPT = `Você extrai a HIERARQUIA de tasks do Jira citada em trechos de conversas de desenvolvimento.
 
 Pra cada task citada cujo PAI (epic ou story) o texto declara EXPLICITAMENTE, devolva um link:
-- task: a key da task filha (ex. EDC-3309).
-- parent: a key do pai (ex. EDC-3208).
+- task: a key da task filha (ex. EDC-1002).
+- parent: a key do pai (ex. EDC-1001).
 - parentType: epic, story ou unknown.
 - parentTitle: título do pai se aparecer no texto, senão vazio.
 - parentIsBucket: true quando o pai é epic "balde" que junta coisas sem relação (Bugs, Débitos técnicos, Melhorias, Sustentação); false se é epic de feature; false se não souber.
 - relatesTo: keys de OUTROS epics que o texto diz que o pai continua, substitui ou com que se relaciona (antecessor, V1/V2, PRD). Vazio se nenhum.
-- confidence: high quando o texto diz literalmente que X é filha/pertence ao epic Y; medium quando é claro pelo contexto (ex. "Épico EDC-3208" no cabeçalho da análise da task EDC-3309); low quando é palpite.
+- confidence: high quando o texto diz literalmente que X é filha/pertence ao epic Y; medium quando é claro pelo contexto (ex. "Épico EDC-1001" no cabeçalho da análise da task EDC-1002); low quando é palpite.
 
-PRD, documento de requisitos, spec, design ou protótipo NUNCA é pai: em "Épico EDC-3338 / PRD EDC-3345" o pai é EDC-3338. O pai é a key que o texto chama de épico/epic/parent/pai/história.
+PRD, documento de requisitos, spec, design ou protótipo NUNCA é pai: em "Épico EDC-1500 / PRD EDC-1501" o pai é EDC-1500. O pai é a key que o texto chama de épico/epic/parent/pai/história.
 Quando o texto cita uma story E um epic sem dizer qual é o pai da task ("contexto na story X e no epic Y"), o pai é o EPIC; a story fica de fora.
 NÃO crie link por mera co-ocorrência de keys, nem entre duas tasks irmãs, nem de task pra PR ou branch. Só use keys que aparecem no texto. Sem nada explícito: links vazio.`;
 

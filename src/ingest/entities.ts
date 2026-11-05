@@ -11,7 +11,7 @@
  *
  * Medido no acervo em 22/09/2026. Nas branches só aparecem EDC (301) e US (74).
  * No texto, EDC e US somam 92% das ocorrências; DEV e QUAL aparecem menos mas
- * são reais (vistos em commits do px-torre-core e em `Freight::isMeliContract`).
+ * são reais (vistos em commits e em nomes de método do código).
  *
  * Sem allowlist, o regex genérico `[A-Z]{2,6}-\d+` come ruído medido: NR-12
  * (norma regulamentadora, 267 ocorrências), ISO-8601, SHA-256, ADR-001, AC-1,
@@ -25,7 +25,7 @@ const PREFIX_GROUP = TASK_PREFIXES.join('|');
  * Primeiro código na branch, em qualquer posição.
  *
  * Ancorar no início parecia mais seguro e custou um caso real: a branch
- * `feature/US-372-delegated-ein-insurance-submission` ficava sem task. Como o
+ * `feature/US-100-checkout-coupon` ficava sem task. Como o
  * prefixo é de uma allowlist curta, procurar em qualquer posição não abre
  * espaço para falso positivo.
  */
@@ -116,7 +116,7 @@ export function normalizeFilePath(
   if (PATH_DENY.some((d) => p.includes(d))) return null;
 
   // Prefixo mais longo que bate com um Project conhecido vence: evita que
-  // `px-painel` e `px-painel-legacy` colidam.
+  // `web-panel` e `web-panel-legacy` colidam.
   let best: string | null = null;
   for (const root of projectPaths) {
     if (p.startsWith(`${root}/`) && (best === null || root.length > best.length)) best = root;
@@ -178,8 +178,8 @@ export interface TaskLine {
 /**
  * Linha fixa que o fluxo "analise EDC-XXXX" emite (bloco do CLAUDE.md):
  *
- *   [task] EDC-3309 pai=EDC-3208 (Epic: Estender contratos V2)
- *   [task] EDC-3400 pai=-
+ *   [task] EDC-1002 pai=EDC-1001 (Epic: Checkout V2)
+ *   [task] EDC-1005 pai=-
  *
  * É a fonte mais confiável do vínculo: veio do Jira no momento da análise,
  * sem inferência. Keys passam pela allowlist/normalização da branch.
@@ -213,7 +213,7 @@ export function parseTaskLines(text: string): TaskLine[] {
  */
 export const HIERARCHY_WORD_RE = /(?<![\p{L}\p{N}])(épico|epico|epic|parent|pai|história|historia|story)(?![\p{L}\p{N}])/giu;
 
-/** Key logo depois de "épico/epic/parent/pai", ex. `Épico EDC-3208`, `Parent:** EDC-2491`. */
+/** Key logo depois de "épico/epic/parent/pai", ex. `Épico EDC-1001`, `Parent:** EDC-900`. */
 const PARENT_REF_RE =
   /(?<![\p{L}\p{N}])(?:épico|epico|epic|parent|pai)(?![\p{L}\p{N}])[\s:*|[(`=]{0,6}((?:EDC|US|DEV|QUAL)-\d{2,6})(?!\d)/giu;
 

@@ -39,12 +39,12 @@ describe('gistOf', () => {
   });
 
   it('pula fragmento de overlap que começa no meio da palavra', () => {
-    const g = gistOf('iveCandidatesOnFreight` quebra aqui. O bloqueio agora pega o caso da fila espelho.');
+    const g = gistOf('iveItemsOnOrder` quebra aqui. O bloqueio agora pega o caso da fila de reprocesso.');
     assert.ok(g.startsWith('O bloqueio'), g);
   });
 
   it('pula anúncio inicial mas mantém a entrega', () => {
-    const g = gistOf('Vou verificar o arquivo. O limite de convites é por empresa, não por operador.');
+    const g = gistOf('Vou verificar o arquivo. O limite de cupons é por loja, não por usuário.');
     assert.ok(g.startsWith('O limite'), g);
   });
 
@@ -64,7 +64,7 @@ describe('isTrivialPrompt', () => {
   for (const p of ['ok', 'sim pode', 'beleza!', 'commit', '/clear', 'faz isso']) {
     it(`trivial: "${p}"`, () => assert.equal(isTrivialPrompt(p), true));
   }
-  for (const p of ['como funciona a fila de espera do contrato espelho?', 'vamos mexer na justificativa de postergação']) {
+  for (const p of ['como funciona a fila de reprocesso do pedido?', 'vamos mexer na justificativa de cancelamento']) {
     it(`não trivial: "${p.slice(0, 30)}"`, () => assert.equal(isTrivialPrompt(p), false));
   }
 });

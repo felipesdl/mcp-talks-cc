@@ -11,7 +11,7 @@ process.env.CACHE_DIR = TMP;
 const { resolveCallerSession, resetCallerSessionCache, cwdSlug, sessionFileFor } =
   await import('../../src/mcp/callerSession.ts');
 
-const CWD = '/Users/alguem/Documents/code/px-painel';
+const CWD = '/Users/alguem/Documents/code/web-panel';
 
 function writeSession(sessionId: string, ageMs = 0): void {
   mkdirSync(join(TMP, 'sessions'), { recursive: true });
@@ -32,7 +32,7 @@ after(() => {
 
 describe('cwdSlug', () => {
   it('bate com o slug do bash (tr -c [:alnum:] -)', () => {
-    assert.equal(cwdSlug(CWD), '-Users-alguem-Documents-code-px-painel');
+    assert.equal(cwdSlug(CWD), '-Users-alguem-Documents-code-web-panel');
   });
 });
 

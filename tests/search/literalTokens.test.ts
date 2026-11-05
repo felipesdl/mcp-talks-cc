@@ -18,7 +18,7 @@ describe('hasLiteralTokens (gate do BM25)', () => {
   }
 
   const literais = [
-    'EDC-2410 status',
+    'EDC-1410 status',
     'onde fica src/mcp/tools/searchMemory.ts',
     'o useEffect que dispara duas vezes',
     'campo created_at na migration',

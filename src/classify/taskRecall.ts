@@ -15,7 +15,7 @@ import { searchMemory } from '../mcp/tools/searchMemory.ts';
  *
  * Duas métricas, e confundi-las é o erro fácil:
  *
- *  - `hitRate` é ANTI-REGRESSÃO. Buscar `EDC-3197` casa LITERAL_TOKEN_RE e liga
+ *  - `hitRate` é ANTI-REGRESSÃO. Buscar `EDC-1200` casa LITERAL_TOKEN_RE e liga
  *    o caminho lexical, que a demoção por valor quase não toca. Ele prova que
  *    nada quebrou, e NÃO mede o benefício. Um teste que não pode falhar pela
  *    mudança em questão dá falsa segurança.

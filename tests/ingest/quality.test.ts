@@ -10,21 +10,21 @@ import {
 describe('stripWrappers', () => {
   it('remove wrapper de slash command', () => {
     const raw =
-      '<command-message>pr-verify</command-message>\n<command-name>/pr-verify</command-name>\n<command-args>https://github.com/px-center/px-painel/pull/1705</command-args>';
+      '<command-message>pr-verify</command-message>\n<command-name>/pr-verify</command-name>\n<command-args>https://github.com/acme/web-panel/pull/123</command-args>';
     assert.equal(stripWrappers(raw), '');
   });
 
   it('remove preâmbulo de skill mas preserva o resto', () => {
     const raw =
-      'Base directory for this skill: /Users/felipesdl/.claude/skills/pr-verify\n\nO gate real do fluxo está em `FreightPolicy::canAdvance`.';
+      'Base directory for this skill: /Users/alguem/.claude/skills/pr-verify\n\nO gate real do fluxo está em `OrderPolicy::canShip`.';
     const out = stripWrappers(raw);
     assert.ok(!out.includes('Base directory'));
-    assert.ok(out.includes('FreightPolicy::canAdvance'));
+    assert.ok(out.includes('OrderPolicy::canShip'));
   });
 
   it('remove aviso injetado por hook do próprio mcp-talks-cc', () => {
     const raw =
-      'Ambiente: **px-painel → front-web (`front`)**. PR OPEN, 40 arquivos, +4402/-115.\n\n> ⚠️ tuning do mcp-talks-cc pendente (136 grades). Revisar o rationale.';
+      'Ambiente: **web-panel → front-web (`front`)**. PR OPEN, 40 arquivos, +4402/-115.\n\n> ⚠️ tuning do mcp-talks-cc pendente (136 grades). Revisar o rationale.';
     const out = stripWrappers(raw);
     assert.ok(out.includes('PR OPEN, 40 arquivos'));
     assert.ok(!out.includes('tuning do mcp-talks-cc pendente'));
@@ -34,7 +34,7 @@ describe('stripWrappers', () => {
     assert.equal(stripWrappers('<bash-stdout>Switched to branch \'main\'</bash-stdout>'), '');
     assert.equal(stripWrappers('[Image #2] [Image #3]'), '');
     assert.equal(
-      stripWrappers('[Image: source: /Users/felipesdl/.claude/image-cache/442d9f10/1.png]'),
+      stripWrappers('[Image: source: /Users/alguem/.claude/image-cache/442d9f10/1.png]'),
       '',
     );
   });
@@ -59,7 +59,7 @@ describe('lowValueReason — corta filler navegacional', () => {
 
   it('não corta anúncio que também entrega conclusão', () => {
     const t =
-      'Vou aplicar os 3 casos. O gate real é `canAdvance`, porque o status só avança quando a vistoria de retirada existe.';
+      'Vou aplicar os 3 casos. O gate real é `canShip`, porque o status só avança quando a nota fiscal existe.';
     assert.equal(lowValueReason(t), null);
   });
 
@@ -81,7 +81,7 @@ describe('lowValueReason — floor de tamanho com exceção por sinal de conteú
   });
 
   it('mantém texto curto com ticket ou path', () => {
-    assert.equal(lowValueReason('Bug reproduz só na EDC-2410, resto passa.'), null);
+    assert.equal(lowValueReason('Bug reproduz só na EDC-1410, resto passa.'), null);
     assert.equal(lowValueReason('Olhar app/Models/Application.php, PK própria.'), null);
   });
 
@@ -98,11 +98,11 @@ describe('lowValueReason — floor de tamanho com exceção por sinal de conteú
 
 describe('prepareConversationText', () => {
   it('devolve texto limpo quando vale indexar', () => {
-    const raw = '<system-reminder>ignore isso</system-reminder>\nO gate é `FreightPolicy::canAdvance`, confirmado no teste.';
+    const raw = '<system-reminder>ignore isso</system-reminder>\nO gate é `OrderPolicy::canShip`, confirmado no teste.';
     const out = prepareConversationText(raw);
     assert.ok(out);
     assert.ok(!out.includes('system-reminder'));
-    assert.ok(out.includes('canAdvance'));
+    assert.ok(out.includes('canShip'));
   });
 
   it('devolve null pra filler', () => {

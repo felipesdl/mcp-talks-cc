@@ -55,7 +55,7 @@ const SCHEMA_DOC = `# mcp-talks-cc — Neo4j schema
 - Todo { ... } :Orphan                                — fonte dormente: ~/.claude/todos sumiu do disco;
                                                         os 72 nós referenciam sessões inexistentes
 - Task { key, prefix, sessionCount,
-         firstSeenAt, lastSeenAt }                    — EDC-3197 etc, da branch e do texto
+         firstSeenAt, lastSeenAt }                    — EDC-1200 etc, da branch e do texto
   :Epic / :Story { title, bucket, childCount,
                    childRepos, bucketHint }           — label extra no mesmo nó Task quando é pai
                                                         (link:epics); bucket = epic balde (Bugs,

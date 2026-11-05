@@ -165,12 +165,12 @@ Dedup por sessão e teto de 8 ponteiros. Fail-open: sem server vivo, sem curl ou
 
 Task do back e do front costumam ser filhas do mesmo epic no Jira. O `link:epics` grava isso
 como `(Task)-[:PART_OF]->(Task:Epic)`, e as irmãs viram a ponte: regra destilada numa task do
-px-torre-core chega em quem mexe na task irmã do app. **Nada acessa o Jira**: a hierarquia sai do
+api-core chega em quem mexe na task irmã do app. **Nada acessa o Jira**: a hierarquia sai do
 que já está na memória, de três fontes (uma task tem no máximo 1 pai; vence a de cima):
 
 | Fonte | Como | Custo |
 |---|---|---|
-| `prompt` | linha fixa `[task] EDC-3309 pai=EDC-3208 (Epic: título)` que o fluxo "analise KEY" emite (bloco do CLAUDE.md) | zero |
+| `prompt` | linha fixa `[task] EDC-1002 pai=EDC-1001 (Epic: título)` que o fluxo "analise KEY" emite (bloco do CLAUDE.md) | zero |
 | `haiku` | `claude -p` lê só os trechos em volta de "épico/epic/parent/pai" (~2k tokens por sessão). Só troca pai vindo de outra fonte com confiança `high` | opt-in `MCP_TALKS_EPIC_LLM=1` (sem a linha, segue a distilação), 5 por SessionStart (`MCP_TALKS_EPIC_LINK_PER_RUN`) |
 | `regex` | 1 task na sessão + 1 único "Épico EDC-X" citado | zero |
 
@@ -180,7 +180,7 @@ distilação desligada. Muda com `npm run upgrade -- --epic-llm=on|off`. O proje
 porque discute os formatos com keys de exemplo.
 
 **Epic balde** (`Bugs`, `Débitos técnicos`, `Melhorias`...) junta tasks sem relação: as filhas não
-viram irmãs. Detectado pelo título; corrija com `MCP_TALKS_EPIC_BUCKETS=EDC-341` /
+viram irmãs. Detectado pelo título; corrija com `MCP_TALKS_EPIC_BUCKETS=EDC-100` /
 `MCP_TALKS_EPIC_NOT_BUCKETS=` no `.env`.
 
 Onde aparece:
