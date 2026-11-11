@@ -70,6 +70,30 @@ export function stripWrappers(text: string): string {
 }
 
 /**
+ * Turno no papel de usuário que não é fala da pessoa: o harness injeta o turno
+ * inteiro (retorno de subagente, mensagem de outra sessão, resumo de contexto,
+ * corpo de skill). Wrapper que chega junto de texto da pessoa (`<system-reminder>`,
+ * `<command-*>`) não conta: o stripWrappers tira e o resto segue. Só wrapper,
+ * sem nada em volta, conta. Prompt que abre com tag qualquer (`<Button>`, XML
+ * colado) é da pessoa.
+ */
+const HARNESS_TURN_PREFIXES = [
+  '<task-notification',
+  'Another Claude session sent a message',
+  'This session is being continued',
+  'Base directory for this skill',
+  'The fork runs as its own',
+  'Continue from where you left off',
+  '[Request interrupted',
+];
+
+export function isHarnessTurn(text: string): boolean {
+  const s = text.trimStart();
+  if (HARNESS_TURN_PREFIXES.some((p) => s.startsWith(p))) return true;
+  return s.startsWith('<') && stripWrappers(s).length === 0;
+}
+
+/**
  * Motivo pelo qual o texto não merece um chunk, ou null se merece.
  * Espera texto JÁ passado por stripWrappers.
  */

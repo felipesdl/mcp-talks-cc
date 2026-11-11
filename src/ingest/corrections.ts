@@ -14,6 +14,8 @@
  * de assunto. Ficam só como sinal de contexto quando o texto já tem marcador.
  */
 
+import { isHarnessTurn } from './quality.ts';
+
 export interface SessionEvent {
   uuid: string;
   role: 'user' | 'assistant';
@@ -42,26 +44,15 @@ const STRONG_RE =
   /\b(ja (te )?(falei|disse|pedi|expliquei)|eu (falei|disse|pedi) (que|pra|para|isso)|nao (era|e) (isso|bem isso|assim|o que eu)|skill errad|usa(r)? a minha|nao (e|era) pra (usar|fazer|mexer)|para de |pare de |vc errou|voce errou|ta errado|esta errado|de novo isso|nao foi isso que|(vc|voce) nao [a-z]+ou\b)/;
 const WEAK_START_RE = /^\s*(nao precisa|errado|faltou|de novo|vc esqueceu|voce esqueceu|esqueceu|nao,|nao nao|na verdade|mas eu (pedi|falei)|nao quero)/;
 
-/** Texto que o harness injeta no papel de usuário e não é fala do usuário. */
+/**
+ * Texto que o harness injeta no papel de usuário e não é fala do usuário. Base
+ * em isHarnessTurn (quality.ts, a mesma regra do push), mais larga aqui: pra
+ * correção, qualquer tag abrindo a mensagem já descarta, menos o bloco colado.
+ */
 function isHarnessText(t: string): boolean {
   const s = t.trimStart();
-  // Qualquer tag do harness abrindo a mensagem (<artifact-...>, <system-reminder>...),
-  // menos o bloco colado, que é texto do usuário.
   if (/^<[a-z][\w-]*[\s/>]/i.test(s) && !s.startsWith('<pasted_content')) return true;
-  return (
-    s.startsWith('The fork runs as its own') ||
-    s.startsWith('Base directory for this skill') ||
-    s.startsWith('Continue from where you left off') ||
-    s.startsWith('<command-') ||
-    s.startsWith('<local-command') ||
-    s.startsWith('<task-notification') ||
-    s.startsWith('<system-reminder') ||
-    s.startsWith('<bash-') ||
-    s.startsWith('Caveat:') ||
-    s.startsWith('This session is being continued') ||
-    s.startsWith('Another Claude session sent a message') ||
-    s.startsWith('[Request interrupted')
-  );
+  return isHarnessTurn(s) || s.startsWith('Caveat:');
 }
 
 /** Tira blocos colados: o que conta é o que o usuário escreveu em volta. */

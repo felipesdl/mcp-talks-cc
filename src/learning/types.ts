@@ -45,6 +45,8 @@ export interface QueryLogEntry {
   refChunkId?: string | null; // find_similar_chunks origem
   /** expand_hits: ids completos que o modelo escolheu ler. */
   refChunkIds?: string[];
+  /** push com hit: false = o aviso não chegou no hook (prazo ou curl desistiu), então sem hit. */
+  delivered?: boolean;
 }
 
 export const queryLogEntrySchema = z.object({
@@ -90,6 +92,7 @@ export const queryLogEntrySchema = z.object({
   refSessionId: z.string().nullable().optional(),
   refChunkId: z.string().nullable().optional(),
   refChunkIds: z.array(z.string()).optional(),
+  delivered: z.boolean().optional(),
 });
 
 // ── grades.jsonl ─────────────────────────────────────────────────────────────

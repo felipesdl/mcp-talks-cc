@@ -62,6 +62,7 @@ try_sock() {
   [ "$left" -lt "$mt" ] && mt=$left
   res="$(printf '%s' "$INPUT" | curl -s -w '\n%{time_total}' \
     --max-time "$(printf '%d.%03d' $((mt / 1000)) $((mt % 1000)))" \
+    -H "x-deadline-ms: ${mt}" \
     --unix-socket "$s" -X POST --data-binary @- "http://mcp/${ROUTE}" 2>/dev/null)"
   rc=$?
   if [ "$rc" -eq 0 ]; then

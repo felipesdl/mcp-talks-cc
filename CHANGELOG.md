@@ -36,6 +36,17 @@ Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o
   `find_decisions`, `find_related_plans`, `list_project_activity` e `my_flow` passam a ir pro
   query-log.
 - `skill_doc` fica fora do `search_memory` padrão (só com `scope`).
+- **Push só conta o que chegou.** Quando o curl do hook desistia (prazo total no fim) ou o server
+  estourava os 850ms, o aviso era descartado mas a sessão já ficava marcada como citada, o teto
+  andava e o query-log gravava hit. Agora estado e hit só valem depois de a resposta sair inteira
+  pro socket com o cliente ainda conectado; o resto vai pro log como `delivered: false`, sem hit,
+  e aparece no `memory://profile` ("passaram no gate e não chegaram"). O hook manda o `--max-time`
+  da tentativa em `x-deadline-ms` e o server encurta o prazo pra responder antes do curl desistir.
+  Vale pro push de prompt e de arquivo.
+- **Push não roda em turno que não é da pessoa**: retorno de subagente, `<task-notification>`,
+  `<system-reminder>`, mensagem de outra sessão, resumo de contexto e texto de skill são pulados
+  antes da busca. Prompt que abre com tag (`<Button>`, XML colado) continua indo pra busca. A regra
+  (`isHarnessTurn`) mora no `quality.ts` e o detector de correção usa a mesma.
 
 - **Pasta de task fora do repo** (`$TASKS_HOME/<id>/`, default `$CODE_HOME/.claude/tasks`):
   contexto, cenários e plano da task num lugar só, lido por todos os repos da task. Id
