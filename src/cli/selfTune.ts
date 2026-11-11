@@ -2,7 +2,8 @@
 // recomputa profile + primer e PROPÕE tuning.candidate.json (nunca aplica —
 // promoção é manual via `npm run self-tune:accept`).
 // Disparado pelo session-ingest.sh depois do ingest; idempotente e com lock.
-import { appendFile, open, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, open, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { withSession, closeDriver } from '../neo4j/driver.ts';
 import { learningPaths } from '../learning/paths.ts';
@@ -197,7 +198,29 @@ async function main(): Promise<void> {
       );
       return r.records.map((rec) => ({ kind: rec.get('kind') as string, text: rec.get('text') as string, repo: rec.get('repo') as string | null }));
     }).catch(() => []);
-    const profile = { ...buildProfile(graded, WINDOW_DAYS, scoreCalibration), usage, crossRules };
+    const correctionRules = await withSession(async (s) => {
+      const r = await s.run(
+        `MATCH (d:Decision { status: 'active', source: 'correction' }) WHERE coalesce(d.coveredBySkill, false) = false
+         RETURN d.text AS text, d.correctionCount AS n, d.correctionSessions AS ss, d.skill AS skill, d.where AS w
+         ORDER BY d.correctionCount DESC LIMIT 3`,
+      );
+      return r.records.map((rec) => ({
+        text: rec.get('text') as string,
+        count: Number(rec.get('n') ?? 0),
+        sessions: Number(rec.get('ss') ?? 0),
+        skill: rec.get('skill') as string | null,
+        where: rec.get('w') as string | null,
+      }));
+    }).catch(() => []);
+    const workflow = await readFile(join(learningPaths.cacheDir, 'workflow-metrics.jsonl'), 'utf8')
+      .then((raw) => {
+        const rows = raw.split('\n').filter(Boolean).map((l) => JSON.parse(l) as { at: string; label: string | null; summary: Record<string, unknown> });
+        const last = rows[rows.length - 1];
+        const zero = rows.find((r) => r.label === 'marco-zero') ?? null;
+        return last ? { at: last.at, summary: last.summary, baseline: zero?.summary ?? null } : null;
+      })
+      .catch(() => null);
+    const profile = { ...buildProfile(graded, WINDOW_DAYS, scoreCalibration), usage, crossRules, correctionRules, workflow };
     await writeAtomic(learningPaths.profile, JSON.stringify(profile, null, 2));
 
     // candidate antes do primer: o primer avisa sobre pendência de tuning

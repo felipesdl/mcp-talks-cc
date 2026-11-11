@@ -1,6 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
+import { logToolUse } from '../../learning/queryLog.ts';
+import { resolveCallerSession } from '../callerSession.ts';
 import { toToolError } from '../../domain/errors.ts';
 import { taskKeyFromSlug } from '../../ingest/entities.ts';
 import { familyOf } from '../../epics/family.ts';
@@ -26,10 +28,13 @@ interface TaskRecall {
   decisions: { own: number; family: number };
   plans: string[];
   files: Array<{ key: string; writes: number }>;
+  prs: Array<{ key: string; state: string; replaces: string[] }>;
+  folder: string | null;
+  aliases: string[];
 }
 
 export async function recallTask(raw: string): Promise<TaskRecall | null> {
-  const key = taskKeyFromSlug(raw) ?? raw.toUpperCase();
+  const key = taskKeyFromSlug(raw) ?? raw;
   return withSession(async (s) => {
     const t = await s.run(
       `MATCH (t:Task {key: $key})
@@ -84,7 +89,29 @@ export async function recallTask(raw: string): Promise<TaskRecall | null> {
        RETURN f.key AS key, r.writes AS writes ORDER BY r.writes DESC LIMIT 6`,
       { key },
     );
+    const prq = await s.run(
+      `MATCH (pr:PullRequest)-[:FOR_TASK]->(:Task {key: $key})
+       OPTIONAL MATCH (pr)-[:REPLACES]->(old:PullRequest)
+       WITH pr, collect(old.number) AS replaces
+       RETURN pr.key AS key, pr.state AS state, replaces
+       ORDER BY pr.createdAt`,
+      { key },
+    );
+    const fq = await s.run(
+      `MATCH (f:TaskFolder)-[:FOR_TASK]->(:Task {key: $key})
+       RETURN f.path AS path, f.present AS present, f.aliases AS aliases
+       ORDER BY coalesce(f.present, false) DESC LIMIT 1`,
+      { key },
+    );
+    const fr = fq.records[0];
     return {
+      prs: prq.records.map((r) => ({
+        key: r.get('key') as string,
+        state: r.get('state') as string,
+        replaces: ((r.get('replaces') as unknown[]) ?? []).map((n) => `#${String(n)}`),
+      })),
+      folder: fr && fr.get('present') ? (fr.get('path') as string) : null,
+      aliases: fr ? ((fr.get('aliases') as string[] | null) ?? []) : [],
       task: key,
       repos: (t.records[0].get('repos') as Array<{ repo: string | null; sessions: unknown }>)
         .filter((r) => r.repo)
@@ -113,6 +140,15 @@ export function formatTaskRecall(r: TaskRecall): string {
   } else {
     lines.push('epic: não identificado na memória');
   }
+  const st: Record<string, string> = { OPEN: 'aberto', MERGED: 'mergeado', CLOSED: 'fechado' };
+  if (r.prs.length) {
+    lines.push(
+      `PRs: ${r.prs
+        .map((p) => `${p.key} ${st[p.state] ?? p.state}${p.replaces.length ? ` (substitui ${p.replaces.join(',')})` : ''}`)
+        .join(', ')}`,
+    );
+  }
+  if (r.folder) lines.push(`pasta: ${r.folder}${r.aliases.length ? ` (antes: ${r.aliases.join(', ')})` : ''}`);
   lines.push(`decisões: ${r.decisions.own} da task, ${r.decisions.family} da família (find_decisions({ taskId: '${r.task}' }))`);
   if (r.plans.length) lines.push(`planos: ${r.plans.join(', ')}`);
   // repo:nome, sem o caminho: o caminho inteiro custava ~60 tokens por arquivo
@@ -126,12 +162,14 @@ export function registerRecallTaskTool(server: McpServer): void {
     'recall_task',
     {
       description:
-        'Structural index of a Jira task from memory, no snippets (~300 tokens): repos and sessions, parent epic with sibling tasks in other repos (front/back of the same feature), decision counts, plans and most-written files. Use it first when a task key comes up, then drill in with find_decisions / search_memory.',
+        'Structural index of a Jira task from memory, no snippets (~300 tokens): repos and sessions, parent epic with sibling tasks in other repos (front/back of the same feature), PRs (state, which closed PR each one replaces), the live task folder, decision counts, plans and most-written files. Use it first when a task key comes up, then drill in with find_decisions / search_memory.',
       inputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
+        // adoção (workflowMetrics): só registra que foi chamada
+        logToolUse('recall_task', resolveCallerSession(), args.taskKey, 0, 0);
         const r = await recallTask(args.taskKey);
         const text = r ? formatTaskRecall(r) : `nada na memória sobre ${args.taskKey}.`;
         return withStructured({ content: [{ type: 'text', text }] }, r ?? {});

@@ -239,3 +239,47 @@ const BUCKET_TITLE_RE =
 export function isBucketTitle(title: string | null | undefined): boolean {
   return !!title && BUCKET_TITLE_RE.test(title);
 }
+
+// ── Worktree -> repo de origem ─────────────────────────────────────────────
+
+export interface ProjectLocation {
+  /** Repo canônico: é o Project da sessão e o projectPath dos chunks. */
+  repoPath: string;
+  /** cwd original, quando era um worktree. */
+  worktree: string | null;
+  /** Nome do worktree (ex. `wip-1110-135228`), que vira id provisório de task. */
+  worktreeName: string | null;
+}
+
+const ORCA_WORKSPACE_RE = /^(.*)\/orca\/workspaces\/([^/]+)\/([^/]+)(?:\/.*)?$/;
+const CLAUDE_WORKTREE_RE = /^(.*)\/\.claude\/worktrees\/([^/]+)(?:\/.*)?$/;
+
+/**
+ * cwd de sessão -> repo de origem. Sem isto cada worktree vira um Project de
+ * uma sessão só: o boost por repo não casa, `list_project_activity` não acha a
+ * sessão e o primer lista `wip-*` como repo.
+ *
+ * Orca: `<home>/orca/workspaces/<repo>/<worktree>` aponta pra
+ * `<codeHome>/<repo>` quando esse diretório existe. Claude Code:
+ * `<repo>/.claude/worktrees/<nome>` aponta pro próprio `<repo>`.
+ */
+export function normalizeProjectPath(
+  cwd: string,
+  codeHome: string,
+  repoExists: (path: string) => boolean,
+): ProjectLocation {
+  const orca = ORCA_WORKSPACE_RE.exec(cwd);
+  if (orca) {
+    const repo = orca[2]!;
+    const name = orca[3]!;
+    const local = `${codeHome}/${repo}`;
+    return {
+      repoPath: repoExists(local) ? local : `${orca[1]}/orca/workspaces/${repo}`,
+      worktree: `${orca[1]}/orca/workspaces/${repo}/${name}`,
+      worktreeName: name,
+    };
+  }
+  const wt = CLAUDE_WORKTREE_RE.exec(cwd);
+  if (wt) return { repoPath: wt[1]!, worktree: `${wt[1]}/.claude/worktrees/${wt[2]}`, worktreeName: wt[2]! };
+  return { repoPath: cwd, worktree: null, worktreeName: null };
+}

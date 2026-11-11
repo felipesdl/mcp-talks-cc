@@ -64,3 +64,36 @@ export async function readQueryLog(fromLine = 0): Promise<{ entries: QueryLogEnt
   }
   return { entries, totalLines: lines.length };
 }
+
+/**
+ * Registro mínimo de uso das tools estruturais (recall_task, find_decisions,
+ * my_flow...). Não têm hits ranqueados pra gradar; servem pra medir adoção
+ * (workflowMetrics). Nunca derruba a tool.
+ */
+export function logToolUse(
+  tool: 'recall_task' | 'find_decisions' | 'find_related_plans' | 'list_project_activity' | 'my_flow',
+  caller: { sessionId: string | null; project: string | null },
+  query: string | null,
+  nResults: number,
+  latencyMs: number,
+): void {
+  void logQuery({
+    v: 1,
+    ts: new Date().toISOString(),
+    tool,
+    sessionId: caller.sessionId,
+    callerProject: caller.project,
+    query,
+    k: null,
+    scope: null,
+    project: null,
+    projectStrict: null,
+    diversity: null,
+    hybridUsed: null,
+    nResults,
+    topScore: null,
+    scores: [],
+    latencyMs,
+    hits: [],
+  });
+}

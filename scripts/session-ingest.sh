@@ -40,6 +40,10 @@ LOCK_DIR="${LOG_DIR}/ingest.lock.d"
 SIMILAR_STAMP="${LOG_DIR}/last-similar.stamp"
 LOCK_STALE_SECS=3600      # lock mais velho que isso = processo morto
 SIMILAR_MIN_AGE_SECS=72000 # rebuild:similar no máx 1x/20h
+PRS_STAMP="${LOG_DIR}/last-prs.stamp"
+PRS_MIN_AGE_SECS=1800 # sync:prs no máx 1x/30min (gh + busca do GitHub)
+METRICS_STAMP="${LOG_DIR}/last-workflow-metrics.stamp"
+METRICS_MIN_AGE_SECS=604800 # snapshot de métricas de fluxo 1x/semana
 
 # Tudo que este hook roda é background: o localEmbedder limita as threads do
 # onnx a metade dos cores pra não travar a máquina a cada sessão aberta.
@@ -380,6 +384,36 @@ if [ "${new_chunks:-0}" -gt 0 ]; then
   log "link:epics (sem LLM) done (exit $?)"
 fi
 
+# ── Pastas de task, PRs e limpeza ───────────────────────────────────────────
+# `task-folder link KEY` só mexe no meta.json (sem chunk novo), então o vínculo
+# pasta -> task roda sempre (~1s). PR muda de estado sem nada local mudar, por
+# isso tem relógio próprio. O gc vem por último: só apaga pasta já ingerida e
+# com os PRs já atualizados. Tudo fail-open.
+log "task-folders start"
+npm run build:entities -- --apply --step=task-folders >> "$LOG" 2>&1
+log "task-folders done (exit $?)"
+prs_age=$(( $(now_epoch) - $(mtime_of "$PRS_STAMP") ))
+if [ "$prs_age" -gt "$PRS_MIN_AGE_SECS" ] && command -v gh >/dev/null 2>&1; then
+  log "sync:prs start"
+  npm run sync:prs -- --apply >> "$LOG" 2>&1
+  log "sync:prs done (exit $?)"
+  date '+%Y-%m-%dT%H:%M:%S%z' > "$PRS_STAMP"
+fi
+log "tasks:gc start"
+npm run tasks:gc -- --apply >> "$LOG" 2>&1
+log "tasks:gc done (exit $?)"
+
+# ── Métricas de fluxo: snapshot semanal (src/cli/workflowMetrics.ts) ────────
+# Série que mede se skill/erro/correção capturados, my_flow e regras de
+# correção mudaram o trabalho. Compara com o marco zero. Fail-open.
+metrics_age=$(( $(now_epoch) - $(mtime_of "$METRICS_STAMP") ))
+if [ "$metrics_age" -gt "$METRICS_MIN_AGE_SECS" ]; then
+  log "metrics:workflow snapshot start"
+  npm run metrics:workflow -- snapshot >> "$LOG" 2>&1
+  log "metrics:workflow snapshot done (exit $?)"
+  date '+%Y-%m-%dT%H:%M:%S%z' > "$METRICS_STAMP"
+fi
+
 # ── SIMILAR_TO: edges do find_similar_chunks só cobrem chunk já processado ───
 if [ "${new_chunks:-0}" -gt 0 ]; then
   similar_age=$(( $(now_epoch) - $(mtime_of "$SIMILAR_STAMP") ))
@@ -459,6 +493,11 @@ if [ $(( DO_DISTILL + DO_LINK )) -gt 0 ] && command -v claude >/dev/null 2>&1; t
         npm run distill -- --limit="$DISTILL_BACKLOG_N" --oldest-first >> "$LOG" 2>&1
         log "distill backlog done (exit $?)"
       fi
+      # Correção repetida -> regra + cobertura por skill. Só correção nova
+      # custa chamada (cache), e o agrupamento só roda quando o conjunto muda.
+      log "distill:corrections start"
+      npm run distill:corrections -- --apply >> "$LOG" 2>&1
+      log "distill:corrections done (exit $?)"
     fi
   else
     log "distill/link pulado (outro run com claude rodando)"

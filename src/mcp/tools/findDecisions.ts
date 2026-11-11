@@ -1,6 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
+import { logToolUse } from '../../learning/queryLog.ts';
+import { resolveCallerSession } from '../callerSession.ts';
 import { toToolError } from '../../domain/errors.ts';
 import { day, fmtConf, projectName, shortId, withStructured } from '../output.ts';
 import { searchMemory } from './searchMemory.ts';
@@ -87,12 +89,14 @@ export function registerFindDecisionsTool(server: McpServer): void {
     'find_decisions',
     {
       description:
-        'Distilled decisions, rules and gotchas from past sessions (short, self-contained, ~50 tokens each). Cheapest way to recall "what did we decide about X" or "what is the rule for Y". With `taskId`, lists that task\'s decisions plus the ones from sibling tasks of the same epic (other repos included) and the epic itself.',
+        'Distilled decisions, rules, gotchas and research findings from past sessions (short, self-contained, ~50 tokens each). Cheapest way to recall "what did we decide about X" or "what is the rule for Y". With `taskId`, lists that task\'s decisions plus the ones from sibling tasks of the same epic (other repos included) and the epic itself.',
       inputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     },
     async (args) => {
       try {
+        // adoção (workflowMetrics): só registra que foi chamada
+        logToolUse('find_decisions', resolveCallerSession(), args.taskId ?? args.query ?? null, 0, 0);
         const hits = await findDecisions(args);
         const text =
           hits.length === 0

@@ -21,7 +21,8 @@ export interface UsageStats {
   searches: number;
   searchesPerActiveSession: number;
   expands: number;
-  pushes: { evaluated: number; fired: number; expanded: number; expandRate: number | null };
+  /** undelivered: ponteiro que passou no gate mas não chegou no hook (prazo/curl desistiu). */
+  pushes: { evaluated: number; fired: number; undelivered: number; expanded: number; expandRate: number | null };
 }
 
 export function usageStats(
@@ -66,6 +67,7 @@ export function usageStats(
     pushes: {
       evaluated: pushes.length,
       fired: fired.length,
+      undelivered: pushes.filter((p) => p.delivered === false).length,
       expanded,
       expandRate: fired.length > 0 ? expanded / fired.length : null,
     },
@@ -79,7 +81,8 @@ export function usageSection(u: UsageStats): string {
     `- adoção: ${pct(u.adoption)} das ${u.sessionsInWindow ?? '?'} sessões em ${u.windowDays}d (busca ou ponteiro expandido); meta >= 70%`,
     `- buscas: ${u.searches} em ${u.sessionsWithSearch} sessões (${u.searchesPerActiveSession.toFixed(1)}/sessão ativa)`,
     `- expand_hits: ${u.expands} chamadas`,
-    `- push: ${u.pushes.fired} ponteiros de ${u.pushes.evaluated} prompts avaliados, ${u.pushes.expanded} expandidos (${pct(u.pushes.expandRate)}); abaixo de 25% o gate está frouxo`,
+    `- push: ${u.pushes.fired} ponteiros de ${u.pushes.evaluated} prompts avaliados, ${u.pushes.expanded} expandidos (${pct(u.pushes.expandRate)}); abaixo de 25% o gate está frouxo` +
+      (u.pushes.undelivered > 0 ? `; ${u.pushes.undelivered} passaram no gate e não chegaram (prazo do hook)` : ''),
     '',
   ].join('\n');
 }

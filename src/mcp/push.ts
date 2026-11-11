@@ -6,7 +6,7 @@ import { getScoreCalibration } from './scoreCalibration.ts';
 import { benchGate } from '../learning/confidenceGate.ts';
 import { learningPaths } from '../learning/paths.ts';
 import { logQuery } from '../learning/queryLog.ts';
-import { gistOf, stripWrappers } from '../ingest/quality.ts';
+import { gistOf, isHarnessTurn, stripWrappers } from '../ingest/quality.ts';
 import { normalizeFilePath } from '../ingest/entities.ts';
 import { crossRepoRuleForFile } from '../epics/family.ts';
 import { day, projectName, shortId } from './output.ts';
@@ -90,6 +90,13 @@ export function isTrivialPrompt(text: string): boolean {
 export interface PushResult {
   context: string | null;
   reason: string;
+  /**
+   * Efeitos que só valem se o aviso chegou: estado de dedup/teto da sessão e
+   * log de hit. Quem entrega (warmSocket) chama com true depois de a resposta
+   * sair inteira, e com false quando o prazo estourou ou o curl já desistiu.
+   * Sem isto a sessão ficava marcada como citada sem ter recebido nada.
+   */
+  settle?: (delivered: boolean) => void;
 }
 
 /** Ponteiro por prompt do user (hook UserPromptSubmit). */
@@ -98,6 +105,9 @@ export async function pushForPrompt(args: {
   sessionId: string | null;
   cwd: string | null;
 }): Promise<PushResult> {
+  // Turno de usuário que não é a pessoa: retorno de subagente, task-notification,
+  // mensagem de outra sessão, texto do harness. Não é assunto novo dela.
+  if (isHarnessTurn(args.prompt)) return { context: null, reason: 'harness' };
   if (isTrivialPrompt(args.prompt)) return { context: null, reason: 'trivial' };
   const st = args.sessionId ? readState(args.sessionId) : null;
   if (st && st.count >= PUSH_MAX_PER_SESSION) return { context: null, reason: 'cap' };
@@ -125,35 +135,41 @@ export async function pushForPrompt(args: {
     return true;
   });
 
-  void logQuery({
-    v: 1,
-    ts: new Date().toISOString(),
-    tool: 'push',
-    sessionId: args.sessionId,
-    callerProject: args.cwd,
-    query: query.slice(0, 300),
-    k: 3,
-    scope: null,
-    project: args.cwd,
-    projectStrict: null,
-    diversity: null,
-    hybridUsed: null,
-    nResults: pick ? 1 : 0,
-    topScore: pick?.score ?? null,
-    scores: pick ? [pick.score] : [],
-    latencyMs: Date.now() - t0,
-    poolVecMedian: r.poolVecMedian,
-    hits: pick
-      ? [{ id: pick.id, sessionId: pick.sessionId, source: pick.source, project: pick.project, vecScore: pick.vec_score, bm25Score: pick.bm25_score }]
-      : [],
-  });
+  const latencyMs = Date.now() - t0;
+  const ts = new Date().toISOString();
+  // Só o que o log usa: o settle pode viver até a resposta fechar, e não deve
+  // segurar o resultado inteiro da busca nem o prompt.
+  const poolVecMedian = r.poolVecMedian;
+  const logged = query.slice(0, 300);
+  const log = (hit: typeof pick | undefined, delivered: boolean | undefined): void => {
+    void logQuery({
+      v: 1,
+      ts,
+      tool: 'push',
+      sessionId: args.sessionId,
+      callerProject: args.cwd,
+      query: logged,
+      k: 3,
+      scope: null,
+      project: args.cwd,
+      projectStrict: null,
+      diversity: null,
+      hybridUsed: null,
+      nResults: hit ? 1 : 0,
+      topScore: hit?.score ?? null,
+      scores: hit ? [hit.score] : [],
+      latencyMs,
+      poolVecMedian,
+      hits: hit
+        ? [{ id: hit.id, sessionId: hit.sessionId, source: hit.source, project: hit.project, vecScore: hit.vec_score, bm25Score: hit.bm25_score }]
+        : [],
+      ...(delivered === undefined ? {} : { delivered }),
+    });
+  };
 
-  if (!pick) return { context: null, reason: 'gate' };
-  if (args.sessionId && st) {
-    st.injectedChunks.push(pick.id);
-    if (pick.sessionId) st.injectedSessions.push(pick.sessionId);
-    st.count++;
-    writeState(args.sessionId, st);
+  if (!pick) {
+    log(undefined, undefined);
+    return { context: null, reason: 'gate' };
   }
   const tasks = pick.tasks.length ? ` ${pick.tasks.join(',')}` : '';
   return {
@@ -161,6 +177,17 @@ export async function pushForPrompt(args: {
       `[memória mcp-talks-cc] talvez relevante: id=${shortId(pick.id)} ${projectName(pick.project)} ${day(pick.timestamp)}${tasks} conf=${pick.confidence!.toFixed(2)} | ${gistOf(pick.snippet, 140)} ` +
       `(expand_hits se servir; não cite sem ler)`,
     reason: 'hit',
+    settle: (delivered) => {
+      // Não entregue conta como busca sem hit: não entra em `fired` nem no teto.
+      log(delivered ? pick : undefined, delivered);
+      if (!delivered || !args.sessionId) return;
+      // Relê: outro prompt da mesma sessão pode ter gravado no meio tempo.
+      const cur = readState(args.sessionId);
+      cur.injectedChunks.push(pick.id);
+      if (pick.sessionId) cur.injectedSessions.push(pick.sessionId);
+      cur.count++;
+      writeState(args.sessionId, cur);
+    },
   };
 }
 
@@ -229,13 +256,16 @@ export async function pushForFile(args: {
   });
 
   const { sessions, dec, cross } = rows;
-  if (args.sessionId && st) {
-    st.files.push(ref.key);
-    if (cross) st.epicDecisions.push(cross.id);
-    if (sessions.length > 0 || dec || cross) st.count++;
-    writeState(args.sessionId, st);
+  const sid = args.sessionId;
+  if (sessions.length === 0 && !dec && !cross) {
+    // Sem nada a entregar: marca o arquivo já, pra não consultar de novo.
+    if (sid) {
+      const cur = readState(sid);
+      cur.files.push(ref.key);
+      writeState(sid, cur);
+    }
+    return { context: null, reason: 'no-history' };
   }
-  if (sessions.length === 0 && !dec && !cross) return { context: null, reason: 'no-history' };
 
   const refs = sessions
     .map((r) => (r.tasks.length ? r.tasks.join('/') : `session ${r.sid.slice(0, 8)}`) + ` ${day(r.at)}`)
@@ -249,5 +279,14 @@ export async function pushForFile(args: {
   return {
     context: `[memória mcp-talks-cc] ${head}${crossLine} search_memory com o nome do arquivo/task se o contexto importar.`,
     reason: 'hit',
+    settle: (delivered) => {
+      // Não entregue: o arquivo fica de fora do dedup e pode avisar na próxima.
+      if (!delivered || !sid) return;
+      const cur = readState(sid);
+      cur.files.push(ref.key);
+      if (cross) cur.epicDecisions.push(cross.id);
+      cur.count++;
+      writeState(sid, cur);
+    },
   };
 }

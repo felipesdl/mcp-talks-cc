@@ -42,12 +42,26 @@ async function liveInventory(): Promise<string> {
 const SCHEMA_DOC = `# mcp-talks-cc — Neo4j schema
 
 ## Nodes
-- Project { path, name, lastIndexed }                  — one per cwd
+- Project { path, name, lastIndexed }                  — one per repo (worktrees collapse into the repo)
 - Session { id, projectPath, startedAt, endedAt,
-            messageCount, gitBranch, version }         — one per JSONL file
+            messageCount, gitBranch, version,
+            worktree, worktreeName, kind }             — one per session (main JSONL + subagents);
+                                                        kind = implementation | research (no file write, no PR)
 - Message { uuid, sessionId, role, timestamp,
-            parentUuid, text }                         — one per user/assistant event
-- ToolCall { id, name, outputSnippet, timestamp }      — extracted from tool_use/tool_result blocks
+            parentUuid, text, slash, sidechain,
+            correction, correctionSignals,
+            correctionText }                           — one per user/assistant event. sidechain = subagent
+                                                        event (its "user" is the main agent). correction =
+                                                        strong|weak when the user corrects the previous step
+- ToolCall { id, name, outputSnippet, timestamp,
+            toolUseId, isError, errorKind, errorSource,
+            skill, agentType }                         — tool_use/tool_result blocks. errorKind = rejected |
+                                                        interrupted | hook | tool_error | exit | other;
+                                                        errorSource = flag (transcript) | text (pruned session)
+- Skill { name, kind skill|command, origin, description,
+          path, exists }                               — installed skills/commands (source skills) + any name
+                                                        called via the Skill tool or a slash command
+- AgentType { name }                                   — subagent type (Explore, general-purpose, plugin:agent)
 - Chunk { id, text, embedding (vec 1024 cosine),
           ordinal, sourceKind, projectPath,
           sessionId, timestamp }                       — embeddable unit
@@ -65,7 +79,18 @@ const SCHEMA_DOC = `# mcp-talks-cc — Neo4j schema
              status, createdAt }                       — regra/decisão/gotcha destilado (distill)
 - File { key, repo, path, ext, sessionCount, idf }    — arquivo tocado, do input do ToolCall
 - TaskMemoryDoc { path, taskId, kind, projectPath,
-                  lastModified }                       — <project>/.claude/tasks/ABC-XXXX/*.md
+                  lastModified }                       — task folder doc: <TASKS_HOME>/<id>/**.md
+                                                        (or <project>/.claude/tasks/ABC-XXXX/*.md)
+- TaskFolder { path, id, aliases, repos, branches,
+               worktrees, present, deletedAt }         — <TASKS_HOME>/<id>/ (meta.json). id = Jira key
+                                                        or provisional (worktree name); aliases = old ids.
+                                                        present=false after tasks:gc deleted it (content stays)
+- PullRequest { key 'repo#n', repo, number, title, url,
+                state OPEN|MERGED|CLOSED, branch,
+                createdAt, mergedAt, closedAt }        — sync:prs (gh), found by key in title or branch
+- RepoDoc { key 'repo:path', repo, path, sha, author,
+            updatedAt, removed }                       — markdown committed on the repo default branch
+- ResearchDoc { path, title, createdAt }              — <RESEARCH_HOME>/**.md, never deleted
 
 ## Edges
 - (Project)-[:HAS_SESSION]->(Session)
@@ -83,7 +108,17 @@ const SCHEMA_DOC = `# mcp-talks-cc — Neo4j schema
 - (Task)-[:TOUCHES]->(File)               — derivada, responde trabalho relacionado em 1 hop
 - (Task)-[:IN_PROJECT]->(Project)
 - (Plan)-[:PLANNED_IN]->(Session), (Plan)-[:ABOUT_TASK]->(Task), (Project)-[:HAS_PLAN]->(Plan)
-- (TaskMemoryDoc)-[:ABOUT_TASK]->(Task)
+- (TaskMemoryDoc)-[:ABOUT_TASK]->(Task), (TaskFolder)-[:FOR_TASK]->(Task)
+- (PullRequest)-[:FOR_TASK]->(Task), (PullRequest)-[:REPLACES]->(PullRequest) — newer PR after a closed one, same task+repo
+- (Session)-[:WORKED_ON_PR]->(PullRequest) — session on the PR branch
+- (ToolCall:tool_result)-[:RESULT_OF { pairedBy: id|position }]->(ToolCall) — result -> request
+- (Session)-[:USED_SKILL { toolCount, slashCount, firstAt, lastAt }]->(Skill)
+- (Session)-[:USED_AGENT { count, firstAt }]->(AgentType), (Task)-[:USES_SKILL { sessions }]->(Skill)
+- (Message)-[:CORRECTS]->(ToolCall|Message)  — user correction -> the step it corrects
+- (Decision { source: 'correction', correctionCount, coveredBySkill, coveredAt })-[:FROM_CORRECTION]->(Message),
+  (Decision)-[:ABOUT_SKILL]->(Skill) — rule distilled from a correction repeated in 2+ sessions
+- (Skill)-[:HAS_CHUNK]->(Chunk { sourceKind: 'skill_doc' })
+- (Project)-[:HAS_DOC]->(RepoDoc), (RepoDoc|ResearchDoc|PullRequest)-[:HAS_CHUNK]->(Chunk)
 - (Task)-[:PART_OF {source, confidence, unit, at}]->(Task:Epic|Story)
   source = prompt (linha [task] do fluxo "analise KEY") | haiku | regex; 1 pai por task.
   Irmãs (filhas do mesmo pai não-balde) são a ponte entre repos: back e front da mesma feature.
@@ -117,9 +152,35 @@ Output is brief by default; expand_hits(ids) returns full text.
 ## sourceKind values on Chunk
 - conversation   — user/assistant message text
 - plan           — ~/.claude/plans markdown
-- task_memory    — <project>/.claude/tasks/<TICKET>/*.md
-- decision       — distilled decision/rule/gotcha (<=300 chars), parent node Decision
+- decision       — distilled decision/rule/gotcha/finding (<=300 chars), parent node Decision
+- task_memory    — task folder doc (<TASKS_HOME>/<id>/*.md or <repo>/.claude/tasks), parent TaskMemoryDoc
+- research       — saved research note (<RESEARCH_HOME>/**.md), parent ResearchDoc
+- pr             — pull request title + description, parent PullRequest (FOR_TASK -> Task)
+- repo_doc       — markdown committed on the repo default branch, parent RepoDoc (author, updatedAt)
+- skill_doc      — installed skill/command text, parent Skill. Excluded from search_memory unless
+                   scope asks for it; used to check whether a distilled rule is already in a skill
 (Todo is stored as node, not embedded; tool outputs are ToolCall nodes, not embedded)
+
+## Reading the numbers (how to decide whether to cite)
+- confidence (conf=, 0..1): percentile of the hit's vector similarity against the historical
+  distribution. Comparable across queries: it is the ONLY number that decides citing.
+  null / "conf n/a" = local calibration still collecting samples: never treat a hit as strong.
+- score: RRF fusion, only orders hits inside the SAME query. bge-m3 returns cosine 0.86-0.91
+  for almost anything, so no absolute cut on score works (0.70 approves 100%, junk included).
+- header pool=N vec_med=X: similarity floor of that query; a hit near the median is noise.
+- Cutoffs STRONG / FLOOR come from the recall benchmark (bench:recall): STRONG = lowest
+  confidence where 80% of hits are truly relevant, FLOOR = 50%. Bench older than 14 days falls
+  back to p75/p25 of the best hit per query (a quota that drifts). Current values: the
+  "gate de citação" line of the session primer. Fallback without it: STRONG 0.90, FLOOR 0.59.
+- Query tips: an abstract topic plus domain ("feature flag rollout laravel") recalls better
+  than single words ("flag"); generic topics ("react") bring noise. Brief output + expand_hits
+  costs a fraction of detail:'full'. diversity 0.3 = panorama across sessions, 0.9 = focus on
+  one topic (>= 0.9 also lifts the 1-hit-per-session cap). "More conversations like this hit":
+  find_similar_chunks({ chunkId }) instead of a new search.
+
+## Retention
+Claude Code prunes transcripts after cleanupPeriodDays (90 by default). The graph is the only
+record of pruned sessions, so an ingest gap longer than that is permanent loss.
 
 ## Useful Cypher
 

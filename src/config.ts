@@ -8,6 +8,7 @@ function env(name: string, fallback?: string): string {
 }
 
 const HOME = homedir();
+const CODE_HOME = env('CODE_HOME', join(HOME, 'Documents/code'));
 
 export const config = {
   neo4j: {
@@ -25,8 +26,40 @@ export const config = {
   },
   paths: {
     claudeHome: env('CLAUDE_HOME', join(HOME, '.claude')),
-    codeHome: env('CODE_HOME', join(HOME, 'Documents/code')),
+    codeHome: CODE_HOME,
     cacheDir: env('CACHE_DIR', join(HOME, '.cache/mcp-talks-cc')),
+    /**
+     * Pasta de trabalho por task, fora de qualquer repo: `<TASKS_HOME>/<id>/*.md`
+     * + `meta.json`. O id é a key do Jira ou um provisório (nome do worktree)
+     * até a task existir. Apagada pelo tasks:gc depois de ingerida.
+     */
+    tasksHome: env('TASKS_HOME', join(CODE_HOME, '.claude/tasks')),
+    /** Notas de pesquisa salvas de propósito. Duráveis: o gc nunca toca. */
+    researchHome: env('RESEARCH_HOME', join(CODE_HOME, '.claude/research')),
+  },
+  /**
+   * Dono (org/usuário) dos PRs no GitHub. Vazio desliga o sync de PRs.
+   * Os PRs são achados pela key da task no título ou pela branch.
+   */
+  github: {
+    prOwner: env('GH_PR_OWNER', ''),
+    /** Task sem sessão há mais que isso (e sem PR aberto) para de ser consultada. */
+    activeDays: parseInt(env('GH_PR_ACTIVE_DAYS', '45'), 10),
+    maxTasksPerRun: parseInt(env('GH_PR_MAX_TASKS', '30'), 10),
+  },
+  /** Markdown versionado na branch padrão de cada repo em CODE_HOME. */
+  repoDocs: {
+    enabled: env('REPO_DOCS', '1') === '1',
+    /** Prefixos de caminho a ignorar, separados por vírgula (ex.: `docs/tmp/,legacy/`). */
+    exclude: env('REPO_DOCS_EXCLUDE', '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean),
+    maxBytes: 200_000,
+  },
+  taskFolders: {
+    /** Pasta sem PR mergeado e sem mexer há N dias sai depois de ingerida. */
+    idleDays: parseInt(env('TASKS_IDLE_DAYS', '30'), 10),
   },
   chunk: {
     size: 800,

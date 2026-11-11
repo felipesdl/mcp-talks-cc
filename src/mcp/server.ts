@@ -10,6 +10,7 @@ import { registerListProjectActivityTool } from './tools/listProjectActivity.ts'
 import { registerFindSimilarChunksTool } from './tools/findSimilarChunks.ts';
 import { registerExpandHitsTool } from './tools/expandHits.ts';
 import { registerRecallTaskTool } from './tools/recallTask.ts';
+import { registerMyFlowTool } from './tools/myFlow.ts';
 import { registerRecallContextPrompt } from './prompts/recallContext.ts';
 import { registerExtractDecisionPrompt } from './prompts/extractDecision.ts';
 import { registerStatsResource } from './resources/stats.ts';
@@ -30,6 +31,7 @@ registerListProjectActivityTool(server);
 registerFindSimilarChunksTool(server);
 registerExpandHitsTool(server);
 registerRecallTaskTool(server);
+registerMyFlowTool(server);
 
 registerRecallContextPrompt(server);
 registerExtractDecisionPrompt(server);

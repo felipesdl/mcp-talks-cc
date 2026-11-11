@@ -51,6 +51,13 @@ export function buildPrimer(
   }
   // Regra destilada que vale entre repos é o que mais rende por token no início
   // da sessão: autocontida, sem precisar buscar. Gist de query só como fallback.
+  if (profile.correctionRules && profile.correctionRules.length > 0) {
+    lines.push('regras que você já corrigiu várias vezes e ainda não estão em skill nenhuma (siga; e proponha gravar):');
+    for (const r of profile.correctionRules.slice(0, 3)) {
+      const t = r.text.length > 150 ? r.text.slice(0, 149) + '…' : r.text;
+      lines.push(`- ${t} (${r.count}x em ${r.sessions} sessões${r.skill ? `, skill ${r.skill}` : ''})`);
+    }
+  }
   if (profile.crossRules && profile.crossRules.length > 0) {
     lines.push('regras destiladas (valem entre repos; find_decisions pra mais):');
     for (const r of profile.crossRules.slice(0, 4)) {

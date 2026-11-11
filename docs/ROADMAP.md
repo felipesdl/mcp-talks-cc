@@ -65,3 +65,29 @@ score passa do threshold. A memória chega sem o modelo decidir chamar a tool.
 
 query log > primer > grading > profile > boosts per-source/per-project > qualquer tuning
 de lambda/pesos.
+
+## 3. Skill e erro de tool como entidade (feito em 0.5.0, ver CHANGELOG)
+
+PR já é entidade (v0.5: `PullRequest`, `FOR_TASK`, `REPLACES`, `WORKED_ON_PR`). Falta:
+
+- **Skill usada por sessão.** Hoje a chamada da tool `Skill` (e o slash command) só existe como
+  texto no `outputSnippet` do `ToolCall`. Virar `(Session)-[:USED_SKILL { order, at }]->(Skill { name })`,
+  com backfill a partir dos ToolCalls já gravados (o input serializado tem o nome).
+- **Erro de tool.** O `tool_result` chega sem ligação com o `tool_use` e sem `is_error`. Parear os
+  dois pelo `tool_use_id` e gravar `ToolCall.isError`, pra saber onde o fluxo quebrou.
+- **Correção do usuário.** Prompt logo depois de erro de tool ou com marcador de correção ("já
+  falei", "não era isso", "usa a minha") vira `(Message)-[:CORRECTS]->(ToolCall|Message)`.
+
+Decisão que mudou na implementação: agrupar correção pelo embedding do texto cru não funciona
+com bge-m3 (corte 0.85 junta assunto sem relação, 0.90+ só junta texto idêntico). O agrupamento
+virou 3 etapas com Haiku: regra implícita por correção, agrupamento das regras, juiz de cobertura.
+
+O que isso destrava:
+
+1. Tool `my_flow({ taskType | taskKey })`: sequência típica de skills e agentes pras tasks
+   parecidas (mesmo repo, mesmo tipo de mudança), com onde costuma quebrar. É a análise de
+   fluxo feita à mão em 2026-11-10, só que sempre atualizada.
+2. Distilação a partir de correção: a mesma correção em 2+ sessões vira `Decision { kind: 'rule' }`
+   com `source: 'correction'`, e o primer avisa "regra corrigida N vezes que ainda não está em
+   nenhuma skill". Caso que motivou: uma regra de roteamento já existia como decision e continuou
+   quebrando porque a description da skill não cobria um dos usos.

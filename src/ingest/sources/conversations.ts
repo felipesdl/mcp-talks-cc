@@ -1,5 +1,5 @@
 import { readdir, stat } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -11,9 +11,12 @@ import { embedChunks } from '../embedChunks.ts';
 import { fingerprint, isUnchanged, markIngested, save as saveCheckpoint } from '../checkpoint.ts';
 import type { Fingerprint } from '../checkpoint.ts';
 import { countReadError } from '../fsErrors.ts';
+import { normalizeProjectPath } from '../entities.ts';
+import { AGENT_TOOLS, agentFromSnippet, classifyToolError, skillFromSnippet, slashFromText } from '../toolSignals.ts';
 import {
   writeProjects,
   writeSessions,
+  refreshSessionCounts,
   writeMessages,
   writeToolCalls,
   writeChunks,
@@ -34,6 +37,7 @@ interface RawEvent {
   timestamp?: string | number;
   cwd?: string;
   gitBranch?: string;
+  isSidechain?: boolean;
   version?: string;
   message?: {
     role?: 'user' | 'assistant';
@@ -49,6 +53,7 @@ interface ContentBlock {
   content?: string | Array<{ type?: string; text?: string }>;
   id?: string;
   tool_use_id?: string;
+  is_error?: boolean;
 }
 
 function projectNameFromPath(p: string): string {
@@ -186,6 +191,8 @@ export async function parseSessionFile(
       role,
       timestamp: iso ?? '',
       text: redacted.slice(0, 10000),
+      slash: role === 'user' ? slashFromText(text) : null,
+      sidechain: ev.isSidechain === true || filePath.includes('/subagents/'),
     });
 
     // Gate de qualidade: limpa wrappers do harness e descarta filler/curto.
@@ -207,12 +214,21 @@ export async function parseSessionFile(
       const tb = toolBlocks[i]!;
       const name = tb.name ?? tb.type ?? 'unknown';
       const id = `${ev.uuid}::tool::${i}`;
+      const snippet = redact(toolOutputSnippet(tb));
+      const isResult = tb.type === 'tool_result';
+      const isError = isResult ? tb.is_error === true : null;
       tools.push({
         id,
         messageUuid: ev.uuid,
         name,
-        outputSnippet: redact(toolOutputSnippet(tb)),
+        outputSnippet: snippet,
         timestamp: iso ?? '',
+        toolUseId: (isResult ? tb.tool_use_id : tb.id) ?? null,
+        isError,
+        // classifica pelo texto inteiro, não pelo snippet de 500 chars
+        errorKind: isError ? classifyToolError(toolOutputFullText(tb) || snippet, true) : null,
+        skill: name === 'Skill' ? skillFromSnippet(snippet) : null,
+        agentType: AGENT_TOOLS.has(name) ? agentFromSnippet(snippet) : null,
       });
 
       if (includeToolOutputs && tb.type === 'tool_result') {
@@ -238,17 +254,22 @@ export async function parseSessionFile(
 
   if (!sessionId || !projectPath) return null;
 
+  const loc = normalizeProjectPath(projectPath, config.paths.codeHome, existsSync);
+
   return {
     session: {
       id: sessionId,
-      projectPath,
+      projectPath: loc.repoPath,
       startedAt: firstTs,
       endedAt: lastTs,
       messageCount: messages.length,
       gitBranch,
       version,
+      worktree: loc.worktree,
+      worktreeName: loc.worktreeName,
+      sidechain: filePath.includes('/subagents/'),
     },
-    project: { path: projectPath, name: projectNameFromPath(projectPath) },
+    project: { path: loc.repoPath, name: projectNameFromPath(loc.repoPath) },
     messages,
     tools,
     embedInputs,
@@ -294,6 +315,11 @@ export interface IngestConversationsOpts {
   force?: boolean;
   fileFilter?: (path: string) => boolean;
   includeToolOutputs?: boolean;
+  /**
+   * Relê arquivo já ingerido (pula o checkpoint) SEM re-embedar: o vetor de
+   * chunk com texto igual é reaproveitado. Pra quando o parse ganha campo novo.
+   */
+  reparse?: boolean;
 }
 
 export async function ingestConversations(opts: IngestConversationsOpts = {}): Promise<{
@@ -355,7 +381,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     let print: Fingerprint;
     let parsed: ParsedSession | null;
     try {
-      if (!opts.force && (await isUnchanged(fp))) {
+      if (!opts.force && !opts.reparse && (await isUnchanged(fp))) {
         skipped++;
         continue;
       }
@@ -374,6 +400,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     await writeProjects([parsed.project]);
     await writeSessions([parsed.session]);
     await writeMessages(parsed.messages);
+    await refreshSessionCounts([parsed.session.id]);
     await writeToolCalls(parsed.tools);
 
     const { chunks } = buildChunks(parsed);
