@@ -1,6 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
+import { logToolUse } from '../../learning/queryLog.ts';
+import { resolveCallerSession } from '../callerSession.ts';
 import { embed } from '../../embeddings/localEmbedder.ts';
 import { toToolError } from '../../domain/errors.ts';
 import { withStructured } from '../output.ts';
@@ -122,6 +124,8 @@ export function registerFindRelatedPlansTool(server: McpServer): void {
     },
     async (args) => {
       try {
+        // adoção (workflowMetrics): só registra que foi chamada
+        logToolUse('find_related_plans', resolveCallerSession(), args.query ?? null, 0, 0);
         const hits = await findRelatedPlans(args);
         const text =
           hits.length === 0

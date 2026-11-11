@@ -8,6 +8,10 @@ import type {
   PlanRecord,
   TodoRecord,
   TaskMemoryDocRecord,
+  TaskFolderRecord,
+  ResearchDocRecord,
+  PullRequestRecord,
+  RepoDocRecord,
 } from './types.ts';
 
 const BATCH = 500;
@@ -97,7 +101,9 @@ export async function writeMessages(rows: MessageRecord[]): Promise<void> {
              // m.text é obrigatório: sem ele get_session_transcript devolve
              // transcript vazio e o sinal de echo do self-tune fica impossível
              // de calcular (não há resposta do assistant pra comparar).
-             m.text = r.text
+             m.text = r.text,
+             m.slash = r.slash,
+             m.sidechain = r.sidechain
          WITH m, r
          MATCH (sess:Session { id: r.sessionId })
          MERGE (sess)-[:HAS_MESSAGE]->(m)`,
@@ -126,10 +132,27 @@ export async function writeToolCalls(rows: ToolCallRecord[]): Promise<void> {
          MERGE (tc:ToolCall { id: r.id })
          SET tc.name = r.name,
              tc.outputSnippet = r.outputSnippet,
-             tc.timestamp = r.timestamp
+             tc.timestamp = r.timestamp,
+             tc.toolUseId = r.toolUseId,
+             tc.isError = r.isError,
+             tc.errorKind = r.errorKind,
+             tc.errorSource = CASE WHEN r.isError IS NULL THEN tc.errorSource ELSE 'flag' END,
+             tc.skill = r.skill,
+             tc.agentType = r.agentType
          WITH tc, r
          MATCH (m:Message { uuid: r.messageUuid })
          MERGE (m)-[:INVOKED]->(tc)`,
+        { rows: batch },
+      );
+    }
+    // Resultado -> pedido pelo id do tool_use (dado exato). Segundo passo
+    // porque o pedido e o resultado moram em mensagens diferentes.
+    for (const batch of batches(rows.filter((r) => r.name === 'tool_result' && r.toolUseId))) {
+      await s.run(
+        `UNWIND $rows AS r
+         MATCH (res:ToolCall { id: r.id })
+         MATCH (use:ToolCall { toolUseId: r.toolUseId }) WHERE use.name <> 'tool_result'
+         MERGE (res)-[rel:RESULT_OF]->(use) SET rel.pairedBy = 'id'`,
         { rows: batch },
       );
     }
@@ -181,7 +204,15 @@ export async function writeChunks(rows: ChunkRecord[]): Promise<void> {
               ? 'MATCH (parent:TaskMemoryDoc { path: r.parentKey })'
               : label === 'ToolCall'
                 ? 'MATCH (parent:ToolCall { id: r.parentKey })'
-                : 'MATCH (parent:Todo { id: r.parentKey })';
+                : label === 'ResearchDoc'
+                  ? 'MATCH (parent:ResearchDoc { path: r.parentKey })'
+                  : label === 'PullRequest'
+                    ? 'MATCH (parent:PullRequest { key: r.parentKey })'
+                    : label === 'RepoDoc'
+                      ? 'MATCH (parent:RepoDoc { key: r.parentKey })'
+                      : label === 'Skill'
+                        ? 'MATCH (parent:Skill { name: r.parentKey })'
+                        : 'MATCH (parent:Todo { id: r.parentKey })';
       for (const batch of batches(list)) {
         await s.run(
           `UNWIND $rows AS r
@@ -253,10 +284,100 @@ export async function writeTaskMemoryDocs(rows: TaskMemoryDocRecord[]): Promise<
              d.projectPath = r.projectPath,
              d.lastModified = r.lastModified
          WITH d, r
-         MATCH (p:Project { path: r.projectPath })
-         MERGE (p)-[:HAS_TASK_MEMORY]->(d)`,
+         OPTIONAL MATCH (p:Project { path: r.projectPath })
+         FOREACH (_ IN CASE WHEN p IS NULL THEN [] ELSE [1] END |
+           MERGE (p)-[:HAS_TASK_MEMORY]->(d)
+         )`,
         { rows: batch },
       );
     }
+  });
+}
+
+/** `rows` é a lista inteira da pasta central: o que não está nela sumiu do disco (rm à mão, rename sem link). */
+export async function writeTaskFolders(rows: TaskFolderRecord[]): Promise<void> {
+  await withSession(async (s) => {
+    if (rows.length > 0) {
+      await s.run(
+        `UNWIND $rows AS r
+         MERGE (f:TaskFolder { path: r.path })
+         SET f.id = r.id, f.aliases = r.aliases, f.repos = r.repos, f.branches = r.branches,
+             f.worktrees = r.worktrees, f.lastModified = r.lastModified, f.present = true`,
+        { rows },
+      );
+    }
+    await s.run(
+      `MATCH (f:TaskFolder { present: true }) WHERE NOT f.path IN $paths
+       SET f.present = false, f.missingAt = toString(datetime())`,
+      { paths: rows.map((r) => r.path) },
+    );
+  });
+}
+
+export async function writeResearchDocs(rows: ResearchDocRecord[]): Promise<void> {
+  if (rows.length === 0) return;
+  await withSession(async (s) => {
+    await s.run(
+      `UNWIND $rows AS r
+       MERGE (d:ResearchDoc { path: r.path })
+       SET d.title = r.title, d.createdAt = r.createdAt`,
+      { rows },
+    );
+  });
+}
+
+export async function writePullRequests(rows: PullRequestRecord[]): Promise<void> {
+  if (rows.length === 0) return;
+  await withSession(async (s) => {
+    await s.run(
+      `UNWIND $rows AS r
+       MERGE (pr:PullRequest { key: r.key })
+       SET pr.repo = r.repo, pr.number = r.number, pr.title = r.title, pr.url = r.url,
+           pr.state = r.state, pr.createdAt = r.createdAt, pr.mergedAt = r.mergedAt,
+           pr.closedAt = r.closedAt, pr.branch = r.branch, pr.bodySha = r.bodySha,
+           pr.syncedAt = toString(datetime())
+       WITH pr, r
+       MERGE (t:Task { key: r.task }) ON CREATE SET t.prefix = split(r.task, '-')[0]
+       MERGE (pr)-[:FOR_TASK]->(t)`,
+      { rows },
+    );
+  });
+}
+
+export async function writeRepoDocs(rows: RepoDocRecord[]): Promise<void> {
+  if (rows.length === 0) return;
+  await withSession(async (s) => {
+    await s.run(
+      `UNWIND $rows AS r
+       MERGE (p:Project { path: r.repoPath }) ON CREATE SET p.name = r.repo
+       MERGE (d:RepoDoc { key: r.key })
+       SET d.repo = r.repo, d.path = r.path, d.sha = r.sha, d.author = r.author,
+           d.updatedAt = r.updatedAt, d.removed = false
+       MERGE (p)-[:HAS_DOC]->(d)`,
+      { rows },
+    );
+  });
+}
+
+/**
+ * Apaga os chunks de um documento antes de regravar. Doc que encolhe deixaria
+ * chunk velho órfão com texto que não existe mais.
+ */
+export async function deleteChunksOf(
+  label: 'PullRequest' | 'RepoDoc' | 'ResearchDoc' | 'TaskMemoryDoc' | 'Skill',
+  keyProp: 'key' | 'path' | 'name',
+  keys: string[],
+  /** Chunks que vão ser regravados: ficam, pra manter o vetor reaproveitado (embedding null no writeChunks). */
+  keepIds: string[] = [],
+): Promise<void> {
+  if (keys.length === 0) return;
+  await withSession(async (s) => {
+    await s.run(
+      `UNWIND $keys AS k
+       MATCH (d:${label} { ${keyProp}: k })-[:HAS_CHUNK]->(c:Chunk)
+       WHERE NOT c.id IN $keep
+       DETACH DELETE c`,
+      { keys, keep: keepIds },
+    );
   });
 }

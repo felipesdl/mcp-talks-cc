@@ -49,9 +49,9 @@ const inputSchema = {
     .optional()
     .describe('Number of results to return (default 8, learned via tuning).'),
   scope: z
-    .array(z.enum(['conversation', 'plan', 'task_memory', 'decision']))
+    .array(z.enum(['conversation', 'plan', 'task_memory', 'decision', 'research', 'pr', 'repo_doc', 'skill_doc']))
     .optional()
-    .describe('Restrict to specific source kinds. Omit to search everything.'),
+    .describe("Restrict to specific source kinds. Omit to search everything except 'skill_doc' (installed skills' text, only when asked)."),
   project: z
     .string()
     .optional()
@@ -103,6 +103,8 @@ export interface SearchHit {
   neighbors: string[];
   parentLabel: string | null;
   parentKey: string | null;
+  /** Último autor, só em repo_doc (doc versionado do time). */
+  author?: string | null;
   /** Tasks (ON_TASK) da sessão do hit, no máx 2. */
   tasks: string[];
 }
@@ -412,7 +414,7 @@ export interface SearchResult {
 export async function searchMemory(args: {
   query: string;
   k?: number;
-  scope?: ('conversation' | 'plan' | 'task_memory' | 'decision')[];
+  scope?: ('conversation' | 'plan' | 'task_memory' | 'decision' | 'research' | 'pr' | 'repo_doc' | 'skill_doc')[];
   project?: string;
   projectStrict?: boolean;
   since?: string;
@@ -450,6 +452,9 @@ export async function searchMemory(args: {
 
   // project é soft boost por padrão (regras cruzam repos); hard filter só com projectStrict
   const projectFilter = args.projectStrict ? (args.project ?? null) : null;
+  // Doc do repo é do time e não foi escrito pensando nesta conversa: entra,
+  // mas abaixo do que veio das suas sessões e decisões. tuning.json vence.
+  const DEFAULT_KIND_BOOST: Record<string, number> = { repo_doc: 0.9 };
   const nowMs = Date.now();
   const callerIsMeta = isMetaProject(resolveCallerSession().project);
   const boostOf = (m: CandidateMeta): number =>
@@ -458,7 +463,7 @@ export async function searchMemory(args: {
     (args.project && !args.projectStrict && m.project === args.project
       ? tuning.projectBoost
       : 1) *
-    (tuning.perSourceKind[m.source] ?? 1) *
+    (tuning.perSourceKind[m.source] ?? DEFAULT_KIND_BOOST[m.source] ?? 1) *
     (m.project ? (tuning.perProject[m.project] ?? 1) : 1) *
     recencyMult(m.timestamp, nowMs);
 
@@ -478,7 +483,7 @@ export async function searchMemory(args: {
       const vecRes = await s.run(
         `CALL db.index.vector.queryNodes('chunks_embedding', toInteger($poolSize), $vec)
          YIELD node, score
-         WHERE ($scope IS NULL OR node.sourceKind IN $scope)
+         WHERE (($scope IS NULL AND node.sourceKind <> 'skill_doc') OR node.sourceKind IN $scope)
            AND ($project IS NULL OR node.projectPath = $project)
            AND ($since IS NULL OR node.timestamp >= $since)
            AND ($until IS NULL OR node.timestamp <= $until)
@@ -512,7 +517,7 @@ export async function searchMemory(args: {
           const ftRes = await s.run(
             `CALL db.index.fulltext.queryNodes('chunks_text', $query, { limit: toInteger($limit) })
              YIELD node, score
-             WHERE ($scope IS NULL OR node.sourceKind IN $scope)
+             WHERE (($scope IS NULL AND node.sourceKind <> 'skill_doc') OR node.sourceKind IN $scope)
                AND ($project IS NULL OR node.projectPath = $project)
                AND ($since IS NULL OR node.timestamp >= $since)
                AND ($until IS NULL OR node.timestamp <= $until)
@@ -576,7 +581,7 @@ export async function searchMemory(args: {
       if (queryTaskSessions.size > 0) {
         const tr = await s.run(
           `MATCH (c:Chunk) WHERE c.sessionId IN $sids
-             AND ($scope IS NULL OR c.sourceKind IN $scope)
+             AND (($scope IS NULL AND c.sourceKind <> 'skill_doc') OR c.sourceKind IN $scope)
              AND ($project IS NULL OR c.projectPath = $project)
              AND ($since IS NULL OR c.timestamp >= $since)
              AND ($until IS NULL OR c.timestamp <= $until)
@@ -790,19 +795,27 @@ export async function searchMemory(args: {
        WHERE sib.id <> c.id AND abs(sib.ordinal - c.ordinal) <= 1
        WITH c, parent, collect(DISTINCT sib.text)[..2] AS neighbors
        OPTIONAL MATCH (:Session { id: c.sessionId })-[:ON_TASK]->(t:Task)
-       WITH c, parent, neighbors, collect(DISTINCT t.key)[..2] AS tasks
+       WITH c, parent, neighbors, collect(DISTINCT t.key) AS sessTasks
+       OPTIONAL MATCH (parent)-[:FOR_TASK|ABOUT_TASK]->(t2:Task)
+       WITH c, parent, neighbors, sessTasks, collect(DISTINCT t2.key) AS docTasks
+       WITH c, parent, neighbors, (sessTasks + docTasks)[..2] AS tasks
        RETURN c.id AS id,
               tasks,
               labels(parent)[0] AS parentLabel,
-              coalesce(parent.uuid, parent.path, parent.id) AS parentKey,
+              coalesce(parent.uuid, parent.key, parent.path, parent.id) AS parentKey,
+              parent.author AS author,
               neighbors`,
       { ids },
     );
-    const ctxMap = new Map<string, { parentLabel: string; parentKey: string; neighbors: string[]; tasks: string[] }>();
+    const ctxMap = new Map<
+      string,
+      { parentLabel: string; parentKey: string; author: string | null; neighbors: string[]; tasks: string[] }
+    >();
     for (const rec of ctxRes.records) {
       ctxMap.set(rec.get('id') as string, {
         parentLabel: rec.get('parentLabel'),
         parentKey: rec.get('parentKey'),
+        author: (rec.get('author') as string | null) ?? null,
         neighbors: (rec.get('neighbors') as string[]) ?? [],
         tasks: (rec.get('tasks') as string[]) ?? [],
       });
@@ -828,6 +841,7 @@ export async function searchMemory(args: {
         neighbors: ctx?.neighbors ?? [],
         parentLabel: ctx?.parentLabel ?? null,
         parentKey: ctx?.parentKey ?? null,
+        author: ctx?.author ?? null,
         tasks: ctx?.tasks ?? [],
       };
     });
@@ -857,9 +871,15 @@ export function formatSearchResult(r: SearchResult, detail: 'brief' | 'full'): s
       (calibrated ? ' | cite pela conf' : ' | conf n/a (calibrando)') +
       ' | expand_hits(ids) pra texto completo';
     const lines = hits.map((h, i) => {
-      const where = h.source === 'plan' ? projectName(h.parentKey) : projectName(h.project);
+      const where =
+        h.source === 'plan'
+          ? projectName(h.parentKey)
+          : h.source === 'pr' || h.source === 'repo_doc'
+            ? (h.parentKey ?? projectName(h.project))
+            : projectName(h.project);
       const tasks = h.tasks.length > 0 ? ` ${h.tasks.join(',')}` : '';
-      return `[${i + 1}] conf=${fmtConf(h.confidence)} id=${shortId(h.id)} ${h.source} ${where} ${day(h.timestamp)}${tasks} | ${gistOf(h.snippet)}`;
+      const by = h.source === 'repo_doc' && h.author ? ` por ${h.author}` : '';
+      return `[${i + 1}] conf=${fmtConf(h.confidence)} id=${shortId(h.id)} ${h.source} ${where} ${day(h.timestamp)}${by}${tasks} | ${gistOf(h.snippet)}`;
     });
     return [header, ...lines].join('\n');
   }
@@ -886,7 +906,7 @@ export function registerSearchMemoryTool(server: McpServer): void {
     'search_memory',
     {
       description:
-        'Hybrid semantic + fulltext search across your Claude Code history (conversations, tool outputs, plans, task memory, todos). Returns top-k chunks diversified via MMR (avoids 5 hits from same session). **Use BEFORE answering questions about past decisions, approaches, or context.** Pass `diversity` (0..1, default 0.7) to balance relevance vs variety. BM25 only kicks in for genuinely literal tokens (ABC-1234, file paths, camelCase identifiers, acronyms); plain prose stays pure vector. **Read `confidence` (0..1), not `score`, to decide whether to cite a hit**: confidence is the hit\'s vec_score percentile against the historical distribution, so it is comparable across queries, while `score` is only meaningful for ordering within one query. `confidence` is null until the local calibration has enough samples. `project` is a soft ranking boost (cross-repo hits stay visible).',
+        'Hybrid semantic + fulltext search across your Claude Code history: conversations, plans, task folders, PRs, team docs committed in the repos, saved research and distilled decisions. **Use BEFORE answering about past decisions, approaches or task context**, and again when the topic changes. Output: 1 line per hit with a short id; read only the useful ones with expand_hits. **Decide citing by `confidence` (conf=), never by `score`**: confidence is a percentile against the historical distribution (comparable across queries), score only orders hits within one query; null = calibration not ready, treat as weak. Cutoffs: the primer line "gate de citação" (fallback strong >= 0.90, ignore < 0.59). Query an abstract topic with domain, not single words. BM25 only kicks in for literal tokens (ABC-1234, path.ext, camelCase, acronyms); prose stays pure vector. `project` is a soft boost (cross-repo hits stay visible). Full reading guide: memory://schema.',
       inputSchema,
       // read-only: sem isso o plan mode do Claude Code pede permissão a cada chamada
       annotations: {

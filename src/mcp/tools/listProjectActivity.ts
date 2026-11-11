@@ -1,6 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { withSession } from '../../neo4j/driver.ts';
+import { logToolUse } from '../../learning/queryLog.ts';
+import { resolveCallerSession } from '../callerSession.ts';
 import { toToolError } from '../../domain/errors.ts';
 import { withStructured } from '../output.ts';
 
@@ -96,6 +98,8 @@ export function registerListProjectActivityTool(server: McpServer): void {
     },
     async (args) => {
       try {
+        // adoção (workflowMetrics): só registra que foi chamada
+        logToolUse('list_project_activity', resolveCallerSession(), args.project ?? null, 0, 0);
         const a = await listProjectActivity(args);
         if (!a.found) {
           return withStructured({

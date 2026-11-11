@@ -14,7 +14,17 @@ export interface QueryLogHit {
 export interface QueryLogEntry {
   v: 1;
   ts: string;
-  tool: 'search_memory' | 'get_session_transcript' | 'find_similar_chunks' | 'expand_hits' | 'push';
+  tool:
+    | 'search_memory'
+    | 'get_session_transcript'
+    | 'find_similar_chunks'
+    | 'expand_hits'
+    | 'push'
+    | 'recall_task'
+    | 'find_decisions'
+    | 'find_related_plans'
+    | 'list_project_activity'
+    | 'my_flow';
   sessionId: string | null; // sessão chamadora (resolvida via src/mcp/callerSession.ts)
   callerProject?: string | null; // cwd da sessão chamadora — NÃO confundir com o arg `project`
   query: string | null;
@@ -40,7 +50,18 @@ export interface QueryLogEntry {
 export const queryLogEntrySchema = z.object({
   v: z.literal(1),
   ts: z.string(),
-  tool: z.enum(['search_memory', 'get_session_transcript', 'find_similar_chunks', 'expand_hits', 'push']),
+  tool: z.enum([
+    'search_memory',
+    'get_session_transcript',
+    'find_similar_chunks',
+    'expand_hits',
+    'push',
+    'recall_task',
+    'find_decisions',
+    'find_related_plans',
+    'list_project_activity',
+    'my_flow',
+  ]),
   sessionId: z.string().nullable(),
   // optional: linhas gravadas antes deste campo existir precisam seguir válidas
   callerProject: z.string().nullable().optional(),
@@ -192,6 +213,10 @@ export interface Profile {
   usage?: import('./usage.ts').UsageStats;
   /** Decisions scope=cross (rule/gotcha) mais recentes, pro primer. */
   crossRules?: Array<{ kind: string; text: string; repo: string | null }>;
+  /** Regras destiladas de correção repetida que ainda não estão em skill nenhuma. */
+  correctionRules?: Array<{ text: string; count: number; sessions: number; skill: string | null; where: string | null }>;
+  /** Resumo do último snapshot de métricas de fluxo (workflowMetrics) e o marco zero. */
+  workflow?: { at: string; summary: Record<string, unknown>; baseline: Record<string, unknown> | null } | null;
 }
 
 // ── tuning.json / tuning.candidate.json ──────────────────────────────────────

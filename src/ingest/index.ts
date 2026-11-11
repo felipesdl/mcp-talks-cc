@@ -3,7 +3,7 @@ import { closeDriver } from '../neo4j/driver.ts';
 import { save as saveCheckpoint } from './checkpoint.ts';
 import { ingestConversations } from './sources/conversations.ts';
 
-type Source = 'conversations' | 'plans' | 'todos' | 'tasks' | 'all';
+type Source = 'conversations' | 'plans' | 'todos' | 'tasks' | 'research' | 'repo-docs' | 'skills' | 'all';
 
 const { values } = parseArgs({
   options: {
@@ -11,6 +11,8 @@ const { values } = parseArgs({
     limit: { type: 'string' },
     force: { type: 'boolean', default: false },
     'include-tool-outputs': { type: 'boolean', default: false },
+    'no-fetch': { type: 'boolean', default: false },
+    reparse: { type: 'boolean', default: false },
   },
 });
 
@@ -41,7 +43,7 @@ async function run(): Promise<void> {
   );
 
   if (source === 'conversations' || source === 'all') {
-    const r = await ingestConversations({ limit, force, includeToolOutputs });
+    const r = await ingestConversations({ limit, force, includeToolOutputs, reparse: !!values.reparse });
     console.error(`[ingest] conversations:`, r);
   }
 
@@ -72,6 +74,26 @@ async function run(): Promise<void> {
       console.error(`[ingest] tasks:`, r);
     } else {
       console.error('[ingest] task memory source not implemented yet');
+    }
+  }
+
+  if (source === 'research' || source === 'all') {
+    const { ingestResearch } = await import('./sources/research.ts');
+    console.error(`[ingest] research:`, await ingestResearch({ force }));
+  }
+
+  if (source === 'skills' || source === 'all') {
+    const { ingestSkills } = await import('./sources/skills.ts');
+    console.error(`[ingest] skills:`, await ingestSkills({ force }));
+  }
+
+  if (source === 'repo-docs' || source === 'all') {
+    // git/rede: falha aqui não pode marcar o ingest inteiro como quebrado
+    try {
+      const { ingestRepoDocs } = await import('./sources/repoDocs.ts');
+      console.error(`[ingest] repo-docs:`, await ingestRepoDocs({ force, noFetch: !!values['no-fetch'] }));
+    } catch (e) {
+      console.error('[ingest] repo-docs falhou (segue):', e);
     }
   }
 }

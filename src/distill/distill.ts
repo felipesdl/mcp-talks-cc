@@ -8,7 +8,7 @@ import { redact } from '../ingest/redact.ts';
 import { runHeadless } from './headless.ts';
 
 /**
- * Distilação: de uma sessão fechada, extrai decisões, regras e gotchas curtos
+ * Distilação: de uma sessão fechada, extrai decisões, regras, gotchas e achados curtos
  * (≤300 chars) que valem fora dela, e grava como nó `Decision` com um Chunk
  * `sourceKind: 'decision'` no mesmo índice vetorial.
  *
@@ -39,7 +39,7 @@ const DUP_COSINE = 0.93;
 const CALL_TIMEOUT_MS = 120_000;
 
 export const itemSchema = z.object({
-  kind: z.enum(['decision', 'rule', 'gotcha']),
+  kind: z.enum(['decision', 'rule', 'gotcha', 'finding']),
   text: z.string().min(20).max(400),
   scope: z.enum(['repo', 'cross']),
   files: z.array(z.string()).max(6),
@@ -56,7 +56,7 @@ const JSON_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          kind: { type: 'string', enum: ['decision', 'rule', 'gotcha'] },
+          kind: { type: 'string', enum: ['decision', 'rule', 'gotcha', 'finding'] },
           text: { type: 'string', maxLength: 300 },
           scope: { type: 'string', enum: ['repo', 'cross'] },
           files: { type: 'array', items: { type: 'string' }, maxItems: 6 },
@@ -75,6 +75,7 @@ Extraia de 0 a 6 itens, só o que continua valendo depois desta conversa:
 - decision: escolha feita entre alternativas, com o porquê ("X em vez de Y porque Z").
 - rule: convenção ou restrição do projeto/negócio que outra tarefa precisa respeitar.
 - gotcha: armadilha não óbvia e como contornar (bug sutil, comportamento inesperado, pré-condição escondida).
+- finding: conclusão de pesquisa ou investigação que pode servir depois, mesmo que não tenha virado feature nem decisão: o que se descobriu, de onde veio (código, doc, dado, link) e pra que serve. Ex.: "Pesquisado: X funciona assim por causa de Y (arquivo Z); serve pra quando precisarem de W". Inclui alternativa estudada e descartada, com o motivo.
 
 NÃO extraia: narração de processo ("verifiquei X", "rodei os testes"), estado temporário (branch, PR aberto, status de CI), coisa óbvia pelo código, preferência de formato de resposta, nem o que só vale pra esta conversa.
 

@@ -17,6 +17,14 @@ const CONSTRAINTS = [
   'CREATE CONSTRAINT file_key IF NOT EXISTS FOR (f:File) REQUIRE f.key IS UNIQUE',
   // v0.3: distilação faz MERGE (d:Decision { id }) por item
   'CREATE CONSTRAINT decision_id IF NOT EXISTS FOR (d:Decision) REQUIRE d.id IS UNIQUE',
+  // v0.5: pasta de task, pesquisa, PR e doc versionado no repo
+  'CREATE CONSTRAINT taskfolder_path IF NOT EXISTS FOR (f:TaskFolder) REQUIRE f.path IS UNIQUE',
+  'CREATE CONSTRAINT researchdoc_path IF NOT EXISTS FOR (d:ResearchDoc) REQUIRE d.path IS UNIQUE',
+  'CREATE CONSTRAINT pr_key IF NOT EXISTS FOR (pr:PullRequest) REQUIRE pr.key IS UNIQUE',
+  'CREATE CONSTRAINT repodoc_key IF NOT EXISTS FOR (d:RepoDoc) REQUIRE d.key IS UNIQUE',
+  // v0.6: skill, agente e correção como entidade
+  'CREATE CONSTRAINT skill_name IF NOT EXISTS FOR (k:Skill) REQUIRE k.name IS UNIQUE',
+  'CREATE CONSTRAINT agenttype_name IF NOT EXISTS FOR (a:AgentType) REQUIRE a.name IS UNIQUE',
 ];
 
 const INDEXES = [
@@ -26,6 +34,11 @@ const INDEXES = [
   'CREATE INDEX chunk_source IF NOT EXISTS FOR (c:Chunk) ON (c.sourceKind)',
   'CREATE INDEX file_repo IF NOT EXISTS FOR (f:File) ON (f.repo)',
   'CREATE INDEX task_prefix IF NOT EXISTS FOR (t:Task) ON (t.prefix)',
+  'CREATE INDEX session_branch IF NOT EXISTS FOR (s:Session) ON (s.gitBranch)',
+  'CREATE INDEX session_worktree IF NOT EXISTS FOR (s:Session) ON (s.worktreeName)',
+  'CREATE INDEX toolcall_tooluseid IF NOT EXISTS FOR (tc:ToolCall) ON (tc.toolUseId)',
+  'CREATE INDEX toolcall_name IF NOT EXISTS FOR (tc:ToolCall) ON (tc.name)',
+  'CREATE INDEX message_correction IF NOT EXISTS FOR (m:Message) ON (m.correction)',
 ];
 
 const FULLTEXT = [
