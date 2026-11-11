@@ -50,11 +50,41 @@ npm run db:stats
 | `conversations` | `~/.claude/projects/<encoded-cwd>/*.jsonl` | `Project`, `Session`, `Message`, `ToolCall`, `Chunk` |
 | `plans` | `~/.claude/plans/*.md` | `Plan`, `Chunk` |
 | `todos` | `~/.claude/todos/*.json` (dormente: o Claude Code não grava mais aí) | `Todo` |
-| `tasks` | `<project>/.claude/tasks/<TICKET>-*/*.md` | `Project`, `TaskMemoryDoc`, `Chunk` |
+| `tasks` | `<project>/.claude/tasks/<TICKET>/*.md` e a pasta de task `$TASKS_HOME/<id>/**.md` | `Project`, `TaskFolder`, `TaskMemoryDoc`, `Chunk` |
+| `research` | `$RESEARCH_HOME/**.md` (notas de pesquisa, nunca apagadas) | `ResearchDoc`, `Chunk` |
+| `repo-docs` | markdown versionado na branch padrão (`origin/HEAD`) de cada repo em `$CODE_HOME` | `RepoDoc`, `Chunk` |
+| `sync:prs` | PRs das tasks ativas via `gh api graphql` (precisa `GH_PR_OWNER`) | `PullRequest`, `Chunk` |
+| `skills` | `SKILL.md`/commands de `$CLAUDE_HOME/skills`, plugins instalados e `<repo>/.claude` | `Skill`, `Chunk` (`skill_doc`) |
+
+### Skill, erro de tool e correção
+
+O ingest guarda, por chamada de tool, o id que pareia pedido e resultado, o `is_error` e o tipo do erro (`rejected`, `interrupted`, `hook`, `tool_error`, `exit`, `other`), a skill chamada e o tipo de subagente; por mensagem, o slash command e se é de subagente (`sidechain`). Sessão cujo `.jsonl` já foi podado ganha o mesmo pelo `build:entities` (passo `tool-signals`): pareamento por posição e erro pelo texto, marcados com `pairedBy`/`errorSource` e restritos ao que passou no portão de qualidade (`npm run metrics:workflow -- gate`). O passo `corrections` marca a mensagem em que você corrige o passo anterior: forte quando o texto tem marcador ("já falei", "usa a minha", "faltou X", "vc não atualizou"), fraca quando é o motivo escrito ao recusar uma tool. Interromper, recusar sem motivo ou mensagem depois de erro de tool não contam sozinhos: no gabarito rotulado, a mensagem depois de interromper era correção em 1 de 12 casos (quase sempre é contexto novo, não correção).
+
+- `my_flow({ taskKey | query })`: cadeia típica de skills e agentes pras tasks parecidas, onde costuma quebrar, as correções que mais voltam e o desfecho.
+- `npm run distill:corrections`: correção forte repetida em 2+ sessões vira regra (`Decision { source: 'correction' }`), com um juiz dizendo se ela já está escrita em alguma skill. A que não está aparece no primer. Usa Haiku (mesmo opt-in da distilação), com cache por correção.
+- `npm run metrics:workflow -- gate | gold | label --not=3,7 | snapshot [--label=marco-zero] | report`: portão de qualidade da captura e série semanal (correções por 100 prompts, recusas e erros por sessão, sessões por task mergeada, adoção do `my_flow`, reincidência de correção já coberta por skill). O resumo entra no `memory://profile`.
+
+### Pasta de task
+
+Arquivo de trabalho de uma task (contexto, cenários, plano, notas) mora em `$TASKS_HOME/<id>/`, fora de qualquer repo, e todos os repos da task leem a mesma pasta. O id é a key do Jira ou, antes de a task existir, um provisório (nome do worktree). `scripts/task-folder.sh` cuida disso a partir do git do cwd:
+
+```bash
+bash scripts/task-folder.sh path        # pasta desta branch/worktree (exit 1 se não tiver)
+bash scripts/task-folder.sh init [ID]   # cria; ID padrão: key da branch, senão o nome do worktree
+bash scripts/task-folder.sh link KEY    # a task apareceu: renomeia a provisória e guarda o id antigo como alias
+```
+
+O `meta.json` (repos, branches, worktrees, aliases) é o que liga sessão e PR à task: o `build:entities` funde o nó provisório de cada alias no da task real, então as conversas de antes do vínculo passam a contar como da task. O `tasks:gc` (no hook) apaga a pasta depois de ingerida, quando todos os PRs da task estão mergeados ou depois de `TASKS_IDLE_DAYS` (30) dias parada sem PR aberto; o markdown continua no grafo (outros arquivos da pasta não são ingeridos e saem junto).
+
+### PRs e docs do repo
+
+`sync:prs` acha os PRs pela key no título (ou pela branch declarada na pasta da task), grava estado, branch e descrição (como chunk `pr`), liga `(:Session)-[:WORKED_ON_PR]->` pela branch e marca `(novo)-[:REPLACES]->(fechado)` quando um PR fechado é seguido de outro na mesma task e repo. Task com tudo mergeado para de ser consultada até ter sessão nova. `recall_task` mostra os PRs e a pasta viva.
+
+`repo-docs` lê o `.md` commitado (docs, specs, CLAUDE.md, README) do `origin/HEAD` de cada repo, não da pasta local, então entra só o que o time commitou. Incremental pelo sha do blob (`~/.cache/mcp-talks-cc/repo-docs.json`); doc removido sai da busca. Guarda último autor e data, e pesa 0,9 na busca (abaixo do que veio das suas sessões).
 
 Por cima disso, passos derivados montam o grafo de entidades a partir do que já foi ingerido: `Task` (da branch e do texto), `File` (do input dos ToolCalls), `Decision` (distilação) e o vínculo task -> epic (ver [Epic como ponte entre repos](#epic-como-ponte-entre-repos)).
 
-`Chunk.sourceKind`: `conversation` (msgs user/assistant) | `plan` | `task_memory` | `decision` (destilado, ver [Distilação](#distilação)). Saída de ferramenta fica como nó `ToolCall`, sem embedding.
+`Chunk.sourceKind`: `conversation` (msgs user/assistant) | `plan` | `task_memory` | `decision` (destilado, ver [Distilação](#distilação); tipos `decision`, `rule`, `gotcha` e `finding`, o achado de pesquisa) | `research` | `pr` | `repo_doc`. Sessão sem escrita de arquivo e sem PR ganha `Session.kind = 'research'`. Saída de ferramenta fica como nó `ToolCall`, sem embedding.
 
 Ingestão é **incremental** — `~/.cache/mcp-talks-cc/checkpoint.json` guarda `mtime + sha256` por arquivo. Re-rodar `npm run ingest` pula arquivos inalterados. Arquivo que mudou (sessão que cresceu) é relido inteiro, mas só passa pelo modelo o chunk novo ou com texto diferente: o resto reaproveita o vetor já gravado. `--force` re-embeda tudo (use ao trocar de modelo).
 

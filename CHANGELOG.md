@@ -15,6 +15,47 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
+## Não lançado (0.5.0)
+
+- **Skill, erro de tool e correção como entidade.** Pareamento pedido -> resultado (`RESULT_OF`),
+  `isError`/`errorKind`, skill e subagente por chamada, slash command e `sidechain` por mensagem,
+  `USED_SKILL`/`USED_AGENT` por sessão e `USES_SKILL` por task, catálogo das skills instaladas
+  (`--source=skills`), correções do usuário (`Message.correction`, `CORRECTS`). Reparse sem
+  re-embedar: `npm run ingest -- --source=conversations --reparse`.
+- **`my_flow`**: o fluxo típico pra um tipo de task (cadeia de skills, onde quebra, correções
+  que voltam, desfecho).
+- **`distill:corrections`**: correção repetida vira regra e um juiz confere se está em alguma
+  skill; a que não está vai pro primer. Regra que não sai mais numa rodada vira `stale`.
+- **Detector de correção só por marcador no texto.** No gabarito de 60 mensagens a versão com
+  sinais estruturais (depois de interromper, de recusa sem motivo ou de erro de tool) acertava
+  20% das fortes; esses sinais agora só anotam contexto. `metrics:workflow -- gate` mede o
+  detector vigente pelo grafo e `gold --append` gera lote de validação fora da amostra.
+- **`metrics:workflow`**: portão de qualidade da captura (medido em 10/11: pareamento por posição
+  99,99%, erro pelo texto 98,6% a 100% em exit/tool_error/rejected; hook e interrupted ficaram de
+  fora) e série semanal contra um marco zero, no `memory://profile`. `recall_task`,
+  `find_decisions`, `find_related_plans`, `list_project_activity` e `my_flow` passam a ir pro
+  query-log.
+- `skill_doc` fica fora do `search_memory` padrão (só com `scope`).
+
+- **Pasta de task fora do repo** (`$TASKS_HOME/<id>/`, default `$CODE_HOME/.claude/tasks`):
+  contexto, cenários e plano da task num lugar só, lido por todos os repos da task. Id
+  provisório (nome do worktree) até a task existir; `scripts/task-folder.sh link KEY` renomeia
+  e o grafo funde as conversas de antes na task. `tasks:gc` apaga a pasta depois de ingerida,
+  quando todos os PRs estão mergeados ou depois de 30 dias parada sem PR aberto. Só o markdown
+  é ingerido: outros arquivos da pasta (prints, json) saem junto.
+- **PRs no grafo** (`sync:prs`, precisa `GH_PR_OWNER` e `gh`): estado, branch, descrição como
+  chunk, `REPLACES` entre PR fechado e o seguinte, sessão ligada pela branch. `recall_task`
+  mostra os PRs e a pasta.
+- **Docs do repo** (`--source=repo-docs`): markdown commitado na branch padrão de cada repo,
+  com último autor e data. `REPO_DOCS=0` desliga.
+- **Pesquisa**: notas em `$RESEARCH_HOME` (source `research`, nunca apagadas), tipo `finding`
+  na distilação e `Session.kind = 'research'` pra sessão sem escrita nem PR.
+- **Correção de metadados de sessão**: arquivo de subagente (mesmo sessionId) sobrescrevia
+  início, fim, contagem e branch da sessão pai. Agora completa em vez de sobrescrever, e a
+  contagem sai das mensagens no grafo. Worktree (Orca, `.claude/worktrees`) passa a contar
+  como o repo de origem, com `Session.worktree`/`worktreeName`. Migração única:
+  `npm run fix:sessions -- --apply` (grava snapshot antes) e `npm run db:init`.
+
 ## 0.4.4 (2026-10-30)
 
 - **Hook de push não estoura mais o timeout de 3s** (`UserPromptSubmit hook ... timed out`).
