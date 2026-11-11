@@ -36,21 +36,50 @@ export async function writeSessions(rows: SessionRecord[]): Promise<void> {
   if (rows.length === 0) return;
   await withSession(async (s) => {
     for (const batch of batches(rows)) {
+      // Arquivo de subagente tem o MESMO sessionId do pai e é ingerido depois
+      // dele (ordem lexical). Com SET puro, o último arquivo vencia: início,
+      // fim e branch da sessão viravam os do subagente. Agora o intervalo é
+      // min/max, e branch/worktree do arquivo principal têm precedência.
       await s.run(
         `UNWIND $rows AS r
          MERGE (sess:Session { id: r.id })
-         SET sess.projectPath = r.projectPath,
-             sess.startedAt = r.startedAt,
-             sess.endedAt = r.endedAt,
-             sess.messageCount = r.messageCount,
-             sess.gitBranch = r.gitBranch,
-             sess.version = r.version
-         WITH sess, r
-         MATCH (p:Project { path: r.projectPath })
+         SET sess.projectPath = CASE WHEN r.sidechain AND sess.projectPath IS NOT NULL
+                                     THEN sess.projectPath ELSE r.projectPath END,
+             sess.startedAt = CASE WHEN sess.startedAt IS NULL OR (r.startedAt IS NOT NULL AND r.startedAt < sess.startedAt)
+                                   THEN r.startedAt ELSE sess.startedAt END,
+             sess.endedAt = CASE WHEN sess.endedAt IS NULL OR (r.endedAt IS NOT NULL AND r.endedAt > sess.endedAt)
+                                 THEN r.endedAt ELSE sess.endedAt END,
+             sess.gitBranch = CASE WHEN r.sidechain THEN coalesce(sess.gitBranch, r.gitBranch)
+                                   ELSE coalesce(r.gitBranch, sess.gitBranch) END,
+             sess.worktree = CASE WHEN r.sidechain THEN coalesce(sess.worktree, r.worktree) ELSE r.worktree END,
+             sess.worktreeName = CASE WHEN r.sidechain THEN coalesce(sess.worktreeName, r.worktreeName)
+                                      ELSE r.worktreeName END,
+             sess.version = coalesce(r.version, sess.version)
+         WITH sess
+         MATCH (p:Project { path: sess.projectPath })
          MERGE (p)-[:HAS_SESSION]->(sess)`,
         { rows: batch },
       );
     }
+  });
+}
+
+/**
+ * messageCount contado no grafo, depois de gravar as mensagens. A sessão junta
+ * o arquivo principal e os de subagente, então o tamanho de um arquivo só
+ * nunca é o total.
+ */
+export async function refreshSessionCounts(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await withSession(async (s) => {
+    await s.run(
+      `UNWIND $ids AS id
+       MATCH (sess:Session { id: id })
+       OPTIONAL MATCH (sess)-[:HAS_MESSAGE]->(m:Message)
+       WITH sess, count(m) AS n
+       SET sess.messageCount = n`,
+      { ids },
+    );
   });
 }
 

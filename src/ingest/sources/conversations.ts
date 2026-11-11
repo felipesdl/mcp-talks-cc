@@ -1,5 +1,5 @@
 import { readdir, stat } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -11,9 +11,11 @@ import { embedChunks } from '../embedChunks.ts';
 import { fingerprint, isUnchanged, markIngested, save as saveCheckpoint } from '../checkpoint.ts';
 import type { Fingerprint } from '../checkpoint.ts';
 import { countReadError } from '../fsErrors.ts';
+import { normalizeProjectPath } from '../entities.ts';
 import {
   writeProjects,
   writeSessions,
+  refreshSessionCounts,
   writeMessages,
   writeToolCalls,
   writeChunks,
@@ -238,17 +240,22 @@ export async function parseSessionFile(
 
   if (!sessionId || !projectPath) return null;
 
+  const loc = normalizeProjectPath(projectPath, config.paths.codeHome, existsSync);
+
   return {
     session: {
       id: sessionId,
-      projectPath,
+      projectPath: loc.repoPath,
       startedAt: firstTs,
       endedAt: lastTs,
       messageCount: messages.length,
       gitBranch,
       version,
+      worktree: loc.worktree,
+      worktreeName: loc.worktreeName,
+      sidechain: filePath.includes('/subagents/'),
     },
-    project: { path: projectPath, name: projectNameFromPath(projectPath) },
+    project: { path: loc.repoPath, name: projectNameFromPath(loc.repoPath) },
     messages,
     tools,
     embedInputs,
@@ -374,6 +381,7 @@ export async function ingestConversations(opts: IngestConversationsOpts = {}): P
     await writeProjects([parsed.project]);
     await writeSessions([parsed.session]);
     await writeMessages(parsed.messages);
+    await refreshSessionCounts([parsed.session.id]);
     await writeToolCalls(parsed.tools);
 
     const { chunks } = buildChunks(parsed);

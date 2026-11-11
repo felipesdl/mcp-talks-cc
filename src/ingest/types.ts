@@ -14,6 +14,14 @@ export interface SessionRecord {
   messageCount: number;
   gitBranch: string | null;
   version: string | null;
+  /** cwd original quando a sessão rodou num worktree; projectPath vira o repo. */
+  worktree: string | null;
+  worktreeName: string | null;
+  /**
+   * Arquivo de subagente (`<sessão>/subagents/*.jsonl`): mesmo sessionId do pai.
+   * Só completa os metadados da sessão, nunca sobrescreve os do arquivo principal.
+   */
+  sidechain: boolean;
 }
 
 export interface MessageRecord {
