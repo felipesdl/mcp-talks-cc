@@ -68,8 +68,17 @@ step() { echo; echo "==> $1"; }
 REPO_VERSION="$(sed -nE 's/^[[:space:]]*"version":[[:space:]]*"([^"]+)".*/\1/p' package.json | head -1)"
 FROM="$(cat "$STAMP" 2>/dev/null || echo 'desconhecida')"
 echo "mcp-talks-cc: instalada ${FROM} -> repo ${REPO_VERSION}"
+# Carimbo mais novo que o repo = release mergeada sem bump no package.json (ou
+# checkout de versão antiga). Segue o upgrade, mas não desce o carimbo.
+STAMP_DOWN=0
+if [ "$FROM" != "desconhecida" ] && [ "$FROM" != "$REPO_VERSION" ] \
+  && [ "$(printf '%s\n%s\n' "$FROM" "$REPO_VERSION" | sort -V | tail -1)" = "$FROM" ]; then
+  STAMP_DOWN=1
+  echo "AVISO: o repo (${REPO_VERSION}) está atrás da versão instalada (${FROM})."
+  echo "  Confira o \"version\" do package.json. O carimbo fica em ${FROM}."
+fi
 
-step "1/7 dependências"
+step "1/8 dependências"
 # package-lock mais novo que o último install = dependência mudou
 if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
   npm install
@@ -77,17 +86,51 @@ else
   echo "  sem mudança de dependência, pulando."
 fi
 
-step "2/7 Neo4j"
+step "2/8 Neo4j"
 npm run infra:up
 
-step "3/7 schema (constraints e índices novos, IF NOT EXISTS)"
+step "3/8 schema (constraints e índices novos, IF NOT EXISTS)"
 npm run db:init
 
-step "4/7 hooks do Claude Code (merge sem sobrescrever, backup em settings.json.bak)"
+step "4/8 migrações de dados (uma vez por máquina, marcadas em migrations-done)"
+# Cada migração roda uma vez e grava o id em migrations-done. Pega o mesmo lock
+# do hook de ingest: reparse com ingest rodando junto grava a mesma sessão duas
+# vezes. Lock ocupado = migração fica pra próxima e o carimbo não avança, então
+# o primer volta a perguntar.
+MIGRATIONS="${CACHE}/migrations-done"
+LOCK_DIR="${CACHE}/ingest.lock.d"
+MIGRATION_PENDING=0
+touch "$MIGRATIONS"
+migrated() { grep -qx "$1" "$MIGRATIONS"; }
+run_migration() { # id descrição comando...
+  local id="$1" desc="$2"; shift 2
+  if migrated "$id"; then echo "  ${id}: já aplicada."; return 0; fi
+  echo "  ${id}: ${desc}"
+  if "$@"; then echo "$id" >> "$MIGRATIONS"
+  else echo "  ${id} falhou; rode npm run upgrade de novo."; MIGRATION_PENDING=1; fi
+}
+if migrated 0.5.0-fix-sessions && migrated 0.5.0-reparse; then
+  echo "  nada pendente."
+elif mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo $$ > "${LOCK_DIR}/pid"
+  trap 'rm -rf "$LOCK_DIR"' EXIT
+  # 0.5.0: sessão com subagente e worktree gravadas errado (snapshot antes de aplicar)
+  run_migration 0.5.0-fix-sessions "corrige metadados de sessão e worktree" \
+    npm run fix:sessions -- --apply
+  # 0.5.0: skill, erro de tool e correção nas conversas já ingeridas (sem re-embedar)
+  run_migration 0.5.0-reparse "re-extrai skills, erros e correções (pode levar uns minutos)" \
+    npm run ingest -- --source=conversations --reparse
+  rm -rf "$LOCK_DIR"; trap - EXIT
+else
+  echo "  ingest do hook rodando agora; migração fica pra próxima. Rode npm run upgrade de novo em alguns minutos."
+  MIGRATION_PENDING=1
+fi
+
+step "5/8 hooks do Claude Code (merge sem sobrescrever, backup em settings.json.bak)"
 node scripts/install-hook.mjs
 chmod +x scripts/*.sh
 
-step "5/7 calibração de confidence"
+step "6/8 calibração de confidence"
 # Sem calibração pronta, search_memory devolve conf n/a e o push não dispara.
 READY="$(sed -nE 's/.*"ready":[[:space:]]*(true|false).*/\1/p' "${CACHE}/score-calibration.json" 2>/dev/null | head -1)"
 if [ "$READY" = "true" ]; then
@@ -96,14 +139,20 @@ else
   npm run calibrate:probe
 fi
 
-step "6/7 entidades e vínculo task -> epic (sem LLM, segundos)"
+step "7/8 entidades e vínculo task -> epic (sem LLM, segundos)"
 # Idempotente. No hook isso só roda quando entra chunk novo; aqui garante que a
 # instalação atualizada já sai com Task/File, PART_OF e o primer por epic.
 npm run build:entities -- --apply || echo "  build:entities falhou (o hook tenta de novo)"
 npm run link:epics -- --apply --no-llm || echo "  link:epics falhou (o hook tenta de novo)"
-step "7/7 carimbo de versão"
-echo "$REPO_VERSION" > "$STAMP"
-echo "  instalada agora: ${REPO_VERSION}"
+step "8/8 carimbo de versão"
+if [ "$MIGRATION_PENDING" -eq 1 ]; then
+  echo "  migração pendente: carimbo fica em ${FROM}."
+elif [ "$STAMP_DOWN" -eq 1 ]; then
+  echo "  mantido em ${FROM} (repo atrás)."
+else
+  echo "$REPO_VERSION" > "$STAMP"
+  echo "  instalada agora: ${REPO_VERSION}"
+fi
 
 # ── passos manuais ─────────────────────────────────────────────────────────
 MANUAL=0
