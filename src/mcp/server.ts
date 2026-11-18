@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { getEmbedder, setEmbedderIdleUnload } from '../embeddings/localEmbedder.ts';
@@ -18,9 +19,14 @@ import { registerSchemaResource } from './resources/schema.ts';
 import { registerProfileResource } from './resources/profile.ts';
 import { startWarmSocket } from './warmSocket.ts';
 
+// Versão única: a do package.json (antes ficava fixa aqui e envelhecia).
+const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+  version: string;
+};
+
 const server = new McpServer({
   name: 'mcp-talks-cc',
-  version: '0.3.1',
+  version,
 });
 
 registerSearchMemoryTool(server);
