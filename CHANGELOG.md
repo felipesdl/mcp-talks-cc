@@ -15,7 +15,7 @@ Sem o Claude: `npm run upgrade` e `npm run upgrade:claude-md -- --dry-run | --ap
 Convenção: **patch** (0.3.x) não tem passo de upgrade e não gera pergunta; o código vale no
 `git pull`. **Minor** (0.x.0) pode ter migração e dispara a pergunta de atualização.
 
-## Não lançado (0.5.0)
+## 0.5.0 (2026-11-18)
 
 - **Skill, erro de tool e correção como entidade.** Pareamento pedido -> resultado (`RESULT_OF`),
   `isError`/`errorKind`, skill e subagente por chamada, slash command e `sidechain` por mensagem,
